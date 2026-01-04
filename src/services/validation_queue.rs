@@ -1,0 +1,333 @@
+/// Stateful validation queue with per-token state machine
+///
+/// Solves the throughput problem:
+/// - Don't block on long retries (15s backoff locks the thread)
+/// - Process multiple pools concurrently
+/// - Track each token's validation state independently
+///
+/// States:
+/// - PENDING_LIQUIDITY: Pool detected, waiting for liquidity to reach threshold
+/// - PENDING_ROUTE: Liquidity confirmed, waiting for Jupiter to index
+/// - VALIDATED: Both on-chain and Jupiter validation passed
+/// - REJECTED: Failed validation (no liquidity, no route, excessive impact, etc.)
+
+use anyhow::Result;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
+
+/// Maximum time to wait for pool account to become readable
+const MAX_ACCOUNT_WAIT_MS: u64 = 10_000; // 10 seconds
+
+/// Maximum time to spend validating a single token
+const MAX_VALIDATION_TIME_MS: u64 = 20_000; // 20 seconds
+
+/// Maximum concurrent validations
+const MAX_INFLIGHT_VALIDATIONS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidationStatus {
+    /// Pool detected, waiting for account to be readable on-chain (0 bytes → readable)
+    PendingAccount,
+
+    /// Just detected, haven't checked liquidity yet
+    PendingLiquidity,
+
+    /// Liquidity confirmed, waiting for router indexing
+    PendingRoute,
+
+    /// Both on-chain and route validation passed
+    Validated,
+
+    /// Rejected (reason stored in state)
+    Rejected,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenValidationState {
+    pub token_mint: String,
+    pub pool_address: String,
+    pub dex_program: String,
+    pub status: ValidationStatus,
+    pub first_seen: Instant,
+    pub last_checked: Instant,
+    pub check_count: u32,
+    pub rejection_reason: Option<String>,
+
+    // Liquidity info (from Stage A)
+    pub liquidity_sol: Option<f64>,
+    pub estimated_price: Option<f64>,
+
+    // Route info (from Stage B - Jupiter)
+    pub jupiter_indexed: bool,
+    pub entry_quote_ok: bool,
+    pub exit_quote_ok: bool,
+    pub impact_bps: Option<u64>,
+}
+
+pub struct ValidationQueue {
+    /// Token mint -> validation state
+    states: Arc<RwLock<HashMap<String, TokenValidationState>>>,
+
+    /// Maximum concurrent validations
+    max_inflight: usize,
+}
+
+impl ValidationQueue {
+    pub fn new() -> Self {
+        Self {
+            states: Arc::new(RwLock::new(HashMap::new())),
+            max_inflight: MAX_INFLIGHT_VALIDATIONS,
+        }
+    }
+
+    /// Add new token to validation queue
+    pub async fn add_token(
+        &self,
+        token_mint: String,
+        pool_address: String,
+        dex_program: String,
+    ) -> bool {
+        let mut states = self.states.write().await;
+
+        // Check if already tracking this token
+        if states.contains_key(&token_mint) {
+            debug!("Token {} already in validation queue", token_mint);
+            return false;
+        }
+
+        // Check if we're at capacity
+        let inflight_count = states.values()
+            .filter(|s| matches!(s.status, ValidationStatus::PendingAccount | ValidationStatus::PendingLiquidity | ValidationStatus::PendingRoute))
+            .count();
+
+        if inflight_count >= self.max_inflight {
+            warn!(
+                "⚠️  Validation queue at capacity ({}/{}), skipping {}",
+                inflight_count, self.max_inflight, token_mint
+            );
+            return false;
+        }
+
+        // Add to queue
+        let state = TokenValidationState {
+            token_mint: token_mint.clone(),
+            pool_address,
+            dex_program,
+            status: ValidationStatus::PendingAccount,
+            first_seen: Instant::now(),
+            last_checked: Instant::now(),
+            check_count: 0,
+            rejection_reason: None,
+            liquidity_sol: None,
+            estimated_price: None,
+            jupiter_indexed: false,
+            entry_quote_ok: false,
+            exit_quote_ok: false,
+            impact_bps: None,
+        };
+
+        states.insert(token_mint.clone(), state);
+        info!("✅ Added {} to validation queue ({} inflight)", token_mint, inflight_count + 1);
+
+        true
+    }
+
+    /// Update token state after on-chain check (Stage A)
+    pub async fn update_liquidity_check(
+        &self,
+        token_mint: &str,
+        liquidity_sol: Option<f64>,
+        estimated_price: Option<f64>,
+    ) -> Result<()> {
+        let mut states = self.states.write().await;
+
+        if let Some(state) = states.get_mut(token_mint) {
+            state.last_checked = Instant::now();
+            state.check_count += 1;
+            state.liquidity_sol = liquidity_sol;
+            state.estimated_price = estimated_price;
+
+            if liquidity_sol.is_some() && liquidity_sol.unwrap() > 0.0 {
+                // Liquidity confirmed, move to route pending
+                state.status = ValidationStatus::PendingRoute;
+                info!(
+                    "🔄 {} → PENDING_ROUTE (liq: {:.2} SOL)",
+                    token_mint,
+                    liquidity_sol.unwrap()
+                );
+            } else if state.first_seen.elapsed() > Duration::from_millis(MAX_VALIDATION_TIME_MS) {
+                // Timeout - reject
+                state.status = ValidationStatus::Rejected;
+                state.rejection_reason = Some("No liquidity after 20s".to_string());
+                info!("❌ {} → REJECTED (no liquidity timeout)", token_mint);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update token state after Jupiter check (Stage B)
+    pub async fn update_route_check(
+        &self,
+        token_mint: &str,
+        entry_ok: bool,
+        exit_ok: bool,
+        impact_bps: Option<u64>,
+    ) -> Result<()> {
+        let mut states = self.states.write().await;
+
+        if let Some(state) = states.get_mut(token_mint) {
+            state.last_checked = Instant::now();
+            state.check_count += 1;
+            state.jupiter_indexed = entry_ok || exit_ok;
+            state.entry_quote_ok = entry_ok;
+            state.exit_quote_ok = exit_ok;
+            state.impact_bps = impact_bps;
+
+            if entry_ok && exit_ok {
+                // Both routes valid - validated!
+                state.status = ValidationStatus::Validated;
+                info!(
+                    "✅ {} → VALIDATED (impact: {}bps)",
+                    token_mint,
+                    impact_bps.unwrap_or(0)
+                );
+            } else if state.first_seen.elapsed() > Duration::from_millis(MAX_VALIDATION_TIME_MS) {
+                // Timeout - reject
+                state.status = ValidationStatus::Rejected;
+                state.rejection_reason = Some("Jupiter route timeout".to_string());
+                info!("❌ {} → REJECTED (route timeout)", token_mint);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Mark token as rejected with reason
+    pub async fn reject_token(&self, token_mint: &str, reason: String) {
+        let mut states = self.states.write().await;
+
+        if let Some(state) = states.get_mut(token_mint) {
+            state.status = ValidationStatus::Rejected;
+            state.rejection_reason = Some(reason.clone());
+            info!("❌ {} → REJECTED ({})", token_mint, reason);
+        }
+    }
+
+    /// Get current state for a token
+    pub async fn get_state(&self, token_mint: &str) -> Option<TokenValidationState> {
+        let states = self.states.read().await;
+        states.get(token_mint).cloned()
+    }
+
+    /// Get all tokens in a specific status
+    pub async fn get_tokens_by_status(&self, status: ValidationStatus) -> Vec<TokenValidationState> {
+        let states = self.states.read().await;
+        states.values()
+            .filter(|s| s.status == status)
+            .cloned()
+            .collect()
+    }
+
+    /// Get all pending tokens (liquidity or route)
+    pub async fn get_pending_tokens(&self) -> Vec<TokenValidationState> {
+        let states = self.states.read().await;
+        states.values()
+            .filter(|s| matches!(s.status, ValidationStatus::PendingAccount | ValidationStatus::PendingLiquidity | ValidationStatus::PendingRoute))
+            .cloned()
+            .collect()
+    }
+
+    /// Clean up old entries (keep last 1000, remove anything older than 1 hour)
+    pub async fn cleanup(&self) {
+        let mut states = self.states.write().await;
+
+        let mut to_remove = Vec::new();
+        let now = Instant::now();
+
+        for (token, state) in states.iter() {
+            // Remove if:
+            // 1. Rejected and older than 5 minutes
+            // 2. Validated and older than 30 minutes
+            // 3. Any state older than 1 hour
+            let should_remove = match state.status {
+                ValidationStatus::Rejected => state.first_seen.elapsed() > Duration::from_secs(300),
+                ValidationStatus::Validated => state.first_seen.elapsed() > Duration::from_secs(1800),
+                _ => state.first_seen.elapsed() > Duration::from_secs(3600),
+            };
+
+            if should_remove {
+                to_remove.push(token.clone());
+            }
+        }
+
+        // Keep only last 1000 if we're over that
+        if states.len() > 1000 {
+            let mut sorted: Vec<_> = states.iter()
+                .map(|(k, v)| (k.clone(), v.first_seen))
+                .collect();
+            sorted.sort_by_key(|(_, time)| *time);
+
+            // Remove oldest entries to get down to 900
+            let to_keep = sorted.len().saturating_sub(900);
+            for (token, _) in sorted.iter().take(to_keep) {
+                to_remove.push(token.clone());
+            }
+        }
+
+        for token in &to_remove {
+            states.remove(token);
+        }
+
+        if !to_remove.is_empty() {
+            debug!("🧹 Cleaned up {} old validation entries", to_remove.len());
+        }
+    }
+
+    /// Get queue statistics
+    pub async fn get_stats(&self) -> ValidationQueueStats {
+        let states = self.states.read().await;
+
+        let total = states.len();
+        let pending_liquidity = states.values()
+            .filter(|s| s.status == ValidationStatus::PendingLiquidity)
+            .count();
+        let pending_route = states.values()
+            .filter(|s| s.status == ValidationStatus::PendingRoute)
+            .count();
+        let validated = states.values()
+            .filter(|s| s.status == ValidationStatus::Validated)
+            .count();
+        let rejected = states.values()
+            .filter(|s| s.status == ValidationStatus::Rejected)
+            .count();
+
+        ValidationQueueStats {
+            total,
+            pending_liquidity,
+            pending_route,
+            validated,
+            rejected,
+            inflight: pending_liquidity + pending_route,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidationQueueStats {
+    pub total: usize,
+    pub pending_liquidity: usize,
+    pub pending_route: usize,
+    pub validated: usize,
+    pub rejected: usize,
+    pub inflight: usize,
+}
+
+impl Default for ValidationQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
