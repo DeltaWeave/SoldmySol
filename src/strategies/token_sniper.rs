@@ -1320,7 +1320,6 @@ impl TokenSniper {
         daily_pnl: Arc<RwLock<f64>>,
         pattern_detectors: Arc<RwLock<LruCache<String, PatternDetector>>>,
         timeframe_analyzers: Arc<RwLock<LruCache<String, TimeframeAnalyzer>>>,
-        price_trackers: Arc<RwLock<LruCache<String, PriceTracker>>>,
         ml_trainer: Arc<RwLock<MLTrainer>>,
         price_cache: Arc<RwLock<PriceCache>>,
         _sentiment_tracker: Arc<RwLock<SentimentAnalyzer>>,
