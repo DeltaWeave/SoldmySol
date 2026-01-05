@@ -437,12 +437,12 @@ mod tests {
         let mut detector = PatternDetector::new(20);
 
         // Consolidation around 1.0
-        for i in 0..8 {
+        for i in 0..9 {
             detector.add_price_point(i * 1000, 1.0, 1000.0);
         }
 
         // Breakout
-        detector.add_price_point(8000, 1.05, 2000.0);
+        detector.add_price_point(9000, 1.03, 2000.0);
 
         let result = detector.detect_pattern();
         assert_eq!(result.pattern, Pattern::Breakout);

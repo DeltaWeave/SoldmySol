@@ -180,8 +180,8 @@ mod tests {
         assert!(ev_positive > 0.0);
         assert_eq!(ev_positive, 64.0); // (0.7 * 100) + (0.3 * -20) = 70 - 6 = 64
 
-        // Negative EV: 40% win rate, +50% avg win, -30% avg loss
-        let ev_negative = PositionSizer::calculate_expected_value(0.4, 50.0, -30.0);
+        // Negative EV: 40% win rate, +50% avg win, -80% avg loss
+        let ev_negative = PositionSizer::calculate_expected_value(0.4, 50.0, -80.0);
         assert!(ev_negative < 0.0);
     }
 

@@ -9,6 +9,7 @@ pub struct Config {
     pub capital: CapitalConfig,
     pub risk: RiskConfig,
     pub sniper: SniperConfig,
+    pub momentum: MomentumConfig,
     pub performance: PerformanceConfig,
     pub database: DatabaseConfig,
 }
@@ -69,6 +70,15 @@ pub struct SniperConfig {
     // P0 CRITICAL: Exit route validation
     pub max_exit_impact_bps: u64,  // Max acceptable round-trip impact (e.g., 1500 = 15%)
     pub require_exit_route: bool,   // Reject tokens without exit route
+}
+
+#[derive(Debug, Clone)]
+pub struct MomentumConfig {
+    pub scan_interval_secs: u64,
+    pub min_volume_24h_usd: f64,
+    pub min_liquidity_usd: f64,
+    pub min_price_change_24h_pct: f64,
+    pub max_candidates: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +246,24 @@ impl Config {
                 .parse::<bool>()?,
         };
 
+        let momentum = MomentumConfig {
+            scan_interval_secs: env::var("MOMENTUM_SCAN_INTERVAL_SECS")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse::<u64>()?,
+            min_volume_24h_usd: env::var("MOMENTUM_MIN_VOLUME_USD")
+                .unwrap_or_else(|_| "10000".to_string())
+                .parse::<f64>()?,
+            min_liquidity_usd: env::var("MOMENTUM_MIN_LIQUIDITY_USD")
+                .unwrap_or_else(|_| "20000".to_string())
+                .parse::<f64>()?,
+            min_price_change_24h_pct: env::var("MOMENTUM_MIN_PRICE_CHANGE_PCT")
+                .unwrap_or_else(|_| "2.5".to_string())
+                .parse::<f64>()?,
+            max_candidates: env::var("MOMENTUM_MAX_CANDIDATES")
+                .unwrap_or_else(|_| "20".to_string())
+                .parse::<usize>()?,
+        };
+
         let database = DatabaseConfig {
             path: env::var("DB_PATH").unwrap_or_else(|_| "./data/trades.db".to_string()),
         };
@@ -246,6 +274,7 @@ impl Config {
             capital,
             risk,
             sniper,
+            momentum,
             performance,
             database,
         };
@@ -316,6 +345,22 @@ impl Config {
         }
         if self.sniper.max_holder_percent <= 0.0 || self.sniper.max_holder_percent > 100.0 {
             return Err(anyhow!("Max holder percent must be between 0 and 100%"));
+        }
+
+        if self.momentum.scan_interval_secs == 0 {
+            return Err(anyhow!("Momentum scan interval must be greater than 0 seconds"));
+        }
+        if self.momentum.min_volume_24h_usd <= 0.0 {
+            return Err(anyhow!("Momentum min volume must be positive"));
+        }
+        if self.momentum.min_liquidity_usd <= 0.0 {
+            return Err(anyhow!("Momentum min liquidity must be positive"));
+        }
+        if self.momentum.min_price_change_24h_pct <= 0.0 {
+            return Err(anyhow!("Momentum min price change must be positive"));
+        }
+        if self.momentum.max_candidates == 0 || self.momentum.max_candidates > 100 {
+            return Err(anyhow!("Momentum max candidates must be between 1 and 100"));
         }
 
         // ✅ PRIORITY 1.2: Private RPC Enforcement (Section 12)
