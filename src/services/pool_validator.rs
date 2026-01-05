@@ -478,21 +478,28 @@ impl PoolValidator {
             }
         };
 
-        let expected_len = std::mem::size_of::<RaydiumAmmInfo>();
-        if account_data.len() < expected_len {
-            info!(
-                "⚠️  Raydium AMM account too small: {} bytes (need {})",
-                account_data.len(),
-                expected_len
-            );
+        if account_data.len() < 464 {
+            info!("⚠️  Raydium AMM account too small: {} bytes", account_data.len());
             return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
         }
 
-        let amm_info = bytemuck::from_bytes::<RaydiumAmmInfo>(&account_data[..expected_len]);
-        let base_vault = amm_info.coin_vault;
-        let quote_vault = amm_info.pc_vault;
-        let base_mint = amm_info.coin_vault_mint;
-        let quote_mint = amm_info.pc_vault_mint;
+        // Raydium AMM v4 layout (approximate offsets):
+        // base_vault: 336..368
+        // quote_vault: 368..400
+        // base_mint: 400..432
+        // quote_mint: 432..464
+        let base_vault = Pubkey::new_from_array(
+            account_data[336..368].try_into().unwrap_or([0u8; 32])
+        );
+        let quote_vault = Pubkey::new_from_array(
+            account_data[368..400].try_into().unwrap_or([0u8; 32])
+        );
+        let base_mint = Pubkey::new_from_array(
+            account_data[400..432].try_into().unwrap_or([0u8; 32])
+        );
+        let quote_mint = Pubkey::new_from_array(
+            account_data[432..464].try_into().unwrap_or([0u8; 32])
+        );
 
         let (reserve_base, reserve_quote) = self.fetch_vault_balances(&base_vault, &quote_vault)?;
 
@@ -565,81 +572,61 @@ impl PoolValidator {
         pool_address: &str,
         _snipe_amount_sol: f64,
     ) -> Result<PoolAccountStatus> {
-        use solana_client::rpc_filter::{Memcmp, RpcFilterType};
-        use spl_token::state::Account;
-
         let pool_pubkey = Pubkey::from_str(pool_address)
             .context("Invalid pool address")?;
 
-        let token_accounts = self
-            .rpc_client
-            .get_program_accounts_with_config(
-                &spl_token::id(),
-                solana_client::rpc_config::RpcProgramAccountsConfig {
-                    filters: Some(vec![
-                        RpcFilterType::DataSize(165),
-                        RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-                            32,
-                            pool_pubkey.to_bytes().to_vec(),
-                        )),
-                    ]),
-                    ..Default::default()
-                },
-            )
-            .context("Failed to fetch Meteora vault accounts")?;
-
-        if token_accounts.len() < 2 {
-            info!(
-                "⚠️  Meteora pool {} has insufficient vault accounts (found {})",
-                pool_address,
-                token_accounts.len()
-            );
-            return Ok(PoolAccountStatus::NotReady {
-                pool_address: pool_address.to_string(),
-                attempts: 5,
-            });
-        }
-
-        let mut vaults = Vec::new();
-        for (_, account) in token_accounts {
-            if let Ok(token_account) = Account::unpack(&account.data) {
-                vaults.push((token_account.mint, token_account.amount));
+        let account_data = match self.fetch_account_with_retry(&pool_pubkey, 5).await {
+            Ok(data) => data,
+            Err(e) => {
+                info!("⚠️  Failed to fetch Meteora account {}: {:?}", pool_address, e);
+                return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
             }
-        }
-
-        if vaults.len() < 2 {
-            return Ok(PoolAccountStatus::NotReady {
-                pool_address: pool_address.to_string(),
-                attempts: 5,
-            });
-        }
-
-        let wsol_mint = Pubkey::from_str("So11111111111111111111111111111111111111112")?;
-        let (base_mint, quote_mint, base_reserve, quote_reserve) = if let Some((mint, amount)) =
-            vaults.iter().find(|(mint, _)| *mint == wsol_mint)
-        {
-            let other = vaults.iter().find(|(m, _)| *m != wsol_mint);
-            match other {
-                Some((other_mint, other_amount)) => (
-                    other_mint.to_string(),
-                    mint.to_string(),
-                    *other_amount,
-                    *amount,
-                ),
-                None => {
-                    return Ok(PoolAccountStatus::NoLiquidity {
-                        pool_address: pool_address.to_string(),
-                        sol_liquidity: 0.0,
-                    });
-                }
-            }
-        } else {
-            info!("⚠️  Meteora pool has no SOL pair (token-token pool)");
-            return Ok(PoolAccountStatus::NoLiquidity {
-                pool_address: pool_address.to_string(),
-                sol_liquidity: 0.0,
-            });
         };
+
+        if account_data.len() < 136 {
+            info!("⚠️  Meteora account too small: {} bytes", account_data.len());
+            return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
+        }
+
+        // Meteora DLMM pools are CLMM-style. Use generic offsets as a best-effort parse.
+        let token_a_mint = Pubkey::new_from_array(
+            account_data[8..40].try_into().unwrap_or([0u8; 32])
+        );
+        let token_b_mint = Pubkey::new_from_array(
+            account_data[40..72].try_into().unwrap_or([0u8; 32])
+        );
+        let token_a_vault = Pubkey::new_from_array(
+            account_data[72..104].try_into().unwrap_or([0u8; 32])
+        );
+        let token_b_vault = Pubkey::new_from_array(
+            account_data[104..136].try_into().unwrap_or([0u8; 32])
+        );
+
+        let (reserve_a, reserve_b) = self.fetch_vault_balances(&token_a_vault, &token_b_vault)?;
+
+        info!(
+            "🔍 Meteora vaults: mintA={}, mintB={}, reserveA={} ({:.4}), reserveB={} ({:.4})",
+            &token_a_mint.to_string()[..8],
+            &token_b_mint.to_string()[..8],
+            reserve_a,
+            reserve_a as f64 / 1e9,
+            reserve_b,
+            reserve_b as f64 / 1e9
+        );
+
+        let wsol_mint = "So11111111111111111111111111111111111111112";
+        let (base_mint, quote_mint, base_reserve, quote_reserve) =
+            if token_a_mint.to_string() == wsol_mint {
+                (token_b_mint.to_string(), token_a_mint.to_string(), reserve_b, reserve_a)
+            } else if token_b_mint.to_string() == wsol_mint {
+                (token_a_mint.to_string(), token_b_mint.to_string(), reserve_a, reserve_b)
+            } else {
+                info!("⚠️  Meteora pool has no SOL pair (token-token pool)");
+                return Ok(PoolAccountStatus::NoLiquidity {
+                    pool_address: pool_address.to_string(),
+                    sol_liquidity: 0.0,
+                });
+            };
 
         if quote_reserve < MIN_SOL_LIQUIDITY_LAMPORTS {
             info!(

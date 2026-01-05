@@ -455,7 +455,6 @@ impl PumpfunTokenSniper {
         let positions = self.active_positions.clone();
         let solana = self.solana.clone();
         let jupiter = self.jupiter.clone();
-        let pumpfun = self.pumpfun.clone();
         let config = self.config.clone();
 
         tokio::spawn(async move {
@@ -515,7 +514,6 @@ impl PumpfunTokenSniper {
                             info!("🎯 TARGET HIT: {} at {:.2}x", &position.token_mint[..8], multiplier);
                             if let Err(e) = execute_exit(
                                 &jupiter,
-                                &pumpfun,
                                 &solana,
                                 &config,
                                 &position.token_mint,
@@ -531,7 +529,6 @@ impl PumpfunTokenSniper {
                         warn!("⏰ Position {} held too long, should exit", &position.token_mint[..8]);
                         if let Err(e) = execute_exit(
                             &jupiter,
-                            &pumpfun,
                             &solana,
                             &config,
                             &position.token_mint,
@@ -563,7 +560,6 @@ impl PumpfunTokenSniper {
 
 async fn execute_exit(
     jupiter: &Arc<JupiterService>,
-    pumpfun: &Arc<PumpFunSwap>,
     solana: &Arc<SolanaConnection>,
     config: &Config,
     token_mint: &str,
@@ -575,22 +571,9 @@ async fn execute_exit(
         return Err(anyhow::anyhow!("No token balance available for exit"));
     }
 
-    let signature = match pumpfun
-        .sell_token(token_mint, token_amount_raw, solana.get_wallet(), config.risk.slippage_bps as u16)
-        .await
-    {
-        Ok(sig) => sig,
-        Err(e) => {
-            warn!(
-                "Pump.fun sell failed for {} (fallback to Jupiter): {}",
-                &token_mint[..8],
-                e
-            );
-            let result = jupiter.sell_for_sol(solana, config, token_mint, token_amount_raw).await?;
-            result.signature.unwrap_or_default()
-        }
-    };
+    let result = jupiter.sell_for_sol(solana, config, token_mint, token_amount_raw).await?;
 
+    let signature = result.signature.unwrap_or_default();
     let log_msg = format!(
         "[{}] PUMP.FUN SELL | Token: {} | Amount: {} | Sig: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
