@@ -96,6 +96,8 @@ impl Backtester {
                 liquidity_sol: trade_data.liquidity_sol,
                 liquidity_usd: trade_data.liquidity_sol * 100.0, // Approximate
                 price_usd: trade_data.entry_price,
+                volume_1h: trade_data.volume_24h / 24.0,
+                volume_6h: trade_data.volume_24h / 4.0,
                 volume_24h: trade_data.volume_24h,
                 price_change_24h: 0.0,
                 created_at: Some(trade_data.timestamp),

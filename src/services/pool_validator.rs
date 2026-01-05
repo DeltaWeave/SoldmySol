@@ -251,16 +251,13 @@ impl PoolValidator {
             }
         };
 
-        // Parse Raydium CLMM pool state
-        // Pool state structure (simplified):
-        // - token_0_mint: [32]u8
-        // - token_1_mint: [32]u8
-        // - token_0_vault: [32]u8
-        // - token_1_vault: [32]u8
-        // - current_tick: i32
-        // - liquidity: u128
+        // Parse Raydium CLMM pool state (offsets per CLMM v4 layout)
+        const MINT_0_OFFSET: usize = 8;
+        const MINT_1_OFFSET: usize = 40;
+        const VAULT_0_OFFSET: usize = 72;
+        const VAULT_1_OFFSET: usize = 104;
 
-        if account_data.len() < 500 {
+        if account_data.len() < VAULT_1_OFFSET + 32 {
             info!("⚠️  CLMM pool account too small: {} bytes", account_data.len());
             return Ok(PoolAccountStatus::NotReady {
                 pool_address: pool_address.to_string(),
@@ -268,20 +265,20 @@ impl PoolValidator {
             });
         }
 
-        // Extract mints (positions 8-40, 40-72 typically)
+        // Extract mints
         let token_0_mint = Pubkey::new_from_array(
-            account_data[8..40].try_into().unwrap_or([0u8; 32])
+            account_data[MINT_0_OFFSET..MINT_0_OFFSET + 32].try_into().unwrap_or([0u8; 32])
         );
         let token_1_mint = Pubkey::new_from_array(
-            account_data[40..72].try_into().unwrap_or([0u8; 32])
+            account_data[MINT_1_OFFSET..MINT_1_OFFSET + 32].try_into().unwrap_or([0u8; 32])
         );
 
         // Extract vault addresses (to check reserves)
         let token_0_vault = Pubkey::new_from_array(
-            account_data[72..104].try_into().unwrap_or([0u8; 32])
+            account_data[VAULT_0_OFFSET..VAULT_0_OFFSET + 32].try_into().unwrap_or([0u8; 32])
         );
         let token_1_vault = Pubkey::new_from_array(
-            account_data[104..136].try_into().unwrap_or([0u8; 32])
+            account_data[VAULT_1_OFFSET..VAULT_1_OFFSET + 32].try_into().unwrap_or([0u8; 32])
         );
 
         // Fetch vault balances

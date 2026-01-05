@@ -204,11 +204,34 @@ impl HybridStrategy {
     }
 
     /// Stop both strategies gracefully
-    pub async fn stop(&self) -> Result<()> {
+    pub async fn stop(&mut self) -> Result<()> {
         info!("⏸️  Stopping Hybrid Strategy...");
 
-        // Strategies are running in background tasks
-        // This is a simplified stop - in production would send shutdown signals
+        if let Some(handle) = &self.pumpfun_sniper_handle {
+            handle.abort();
+        }
+        if let Some(handle) = &self.token_creation_handle {
+            handle.abort();
+        }
+        if let Some(handle) = &self.momentum_handle {
+            handle.abort();
+        }
+        if let Some(handle) = &self.pool_sniper_handle {
+            handle.abort();
+        }
+
+        if let Some(handle) = self.pumpfun_sniper_handle.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.token_creation_handle.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.momentum_handle.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.pool_sniper_handle.take() {
+            let _ = handle.await;
+        }
 
         info!("✅ Hybrid Strategy stopped");
         Ok(())

@@ -1,13 +1,18 @@
 // ✅ STRATEGY VALIDATION: Historical Data Collector
 // Collects token launch data from Raydium/Pump.fun for backtesting
 
-use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
+use anyhow::Result;
+use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use std::str::FromStr;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
+
+use solana_trading_bot::config::Config;
+use solana_trading_bot::services::{JupiterService, PriceFeed, SolanaConnection, TokenSafetyChecker};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenLaunchData {
@@ -79,14 +84,28 @@ pub struct DataCollector {
     db_path: String,
     collection_interval_seconds: u64,
     max_tokens_per_day: usize,
+    price_feed: PriceFeed,
+    jupiter: JupiterService,
+    solana: Arc<SolanaConnection>,
+    safety_checker: TokenSafetyChecker,
 }
 
 impl DataCollector {
-    pub fn new(db_path: String) -> Self {
+    pub fn new(
+        db_path: String,
+        price_feed: PriceFeed,
+        jupiter: JupiterService,
+        solana: Arc<SolanaConnection>,
+    ) -> Self {
+        let safety_checker = TokenSafetyChecker::new(solana.clone());
         Self {
             db_path,
             collection_interval_seconds: 300, // 5 minutes
             max_tokens_per_day: 100, // Focus on quality over quantity
+            price_feed,
+            jupiter,
+            solana,
+            safety_checker,
         }
     }
 
@@ -202,19 +221,15 @@ impl DataCollector {
 
     /// Fetch newly launched tokens from DEX
     async fn fetch_new_tokens(&self) -> Result<Vec<String>> {
-        // In production, this would call:
-        // - Raydium API for new pairs
-        // - Pump.fun API for new launches
-        // - DexScreener API for token listings
+        info!("🔍 Querying DEX aggregators for new token launches...");
 
-        // For now, simulate finding new tokens
-        info!("🔍 Querying DEX for new token launches...");
+        let pools = self.price_feed.get_new_pools().await?;
+        let token_addresses = pools
+            .into_iter()
+            .map(|pool| pool.token_address)
+            .collect::<Vec<_>>();
 
-        // Placeholder - in production, implement actual API calls
-        Ok(vec![
-            // "TokenAddress1".to_string(),
-            // "TokenAddress2".to_string(),
-        ])
+        Ok(token_addresses)
     }
 
     /// Track a token for 24 hours and collect all metrics
@@ -320,27 +335,82 @@ impl DataCollector {
     }
 
     /// Get current snapshot of token metrics
-    async fn get_token_snapshot(&self, _token_address: &str) -> Result<TokenSnapshot> {
-        // In production, this would fetch from:
-        // - Jupiter for price
-        // - Solana RPC for holders
-        // - DexScreener for volume
+    async fn get_token_snapshot(&self, token_address: &str) -> Result<TokenSnapshot> {
+        let pool_info = self.price_feed.get_token_info(token_address).await?;
 
-        // Placeholder
+        let mut symbol = "UNKNOWN".to_string();
+        let mut name = "UNKNOWN".to_string();
+        let mut pair_address = "UNKNOWN".to_string();
+        let mut liquidity_sol = 0.0;
+        let mut market_cap = 0.0;
+        let mut volume_24h = 0.0;
+        let mut volume_1h = 0.0;
+        let mut volume_5m = 0.0;
+
+        let price_from_dex = if let Some(pool) = &pool_info {
+            symbol = pool.token_symbol.clone();
+            name = pool.token_symbol.clone();
+            pair_address = pool.pair_address.clone();
+            liquidity_sol = pool.liquidity_sol;
+            volume_24h = pool.volume_24h;
+            volume_1h = if pool.volume_1h > 0.0 { pool.volume_1h } else { pool.volume_24h / 24.0 };
+            volume_5m = volume_1h / 12.0;
+            pool.price_usd
+        } else {
+            0.0
+        };
+
+        let price_usd = match self.jupiter.get_token_price(token_address).await {
+            Ok(price) if price > 0.0 => price,
+            _ => price_from_dex,
+        };
+
+        let holders_data = if let Ok(mint) = solana_sdk::pubkey::Pubkey::from_str(token_address) {
+            self.solana.get_token_holder_stats(&mint).await.ok()
+        } else {
+            None
+        };
+
+        let (holders, top_holder_percent) = holders_data.unwrap_or((0, 0.0));
+        market_cap = if price_usd > 0.0 {
+            let supply = if let Ok(mint) = solana_sdk::pubkey::Pubkey::from_str(token_address) {
+                self.solana
+                    .get_client()
+                    .get_token_supply(&mint)
+                    .await
+                    .ok()
+                    .and_then(|supply| supply.amount.parse::<u64>().ok())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            (supply as f64) * price_usd
+        } else {
+            0.0
+        };
+
+        let honeypot = self
+            .safety_checker
+            .check_honeypot(&self.jupiter, token_address, 1_000_000)
+            .await
+            .unwrap_or(true);
+
+        let rug_pulled = liquidity_sol < 0.1 && volume_24h < 100.0;
+
         Ok(TokenSnapshot {
-            symbol: "TOKEN".to_string(),
-            name: "Token Name".to_string(),
-            pair_address: "pair_addr".to_string(),
-            price_usd: 0.0001,
-            liquidity_sol: 10.0,
-            market_cap: 100000.0,
-            volume_5m: 1000.0,
-            volume_1h: 5000.0,
-            volume_24h: 50000.0,
-            holders: 100,
-            top_holder_percent: 15.0,
-            rug_pulled: false,
-            honeypot: false,
+            symbol,
+            name,
+            pair_address,
+            price_usd,
+            liquidity_sol,
+            market_cap,
+            volume_5m,
+            volume_1h,
+            volume_24h,
+            holders: holders as i32,
+            top_holder_percent,
+            rug_pulled,
+            honeypot,
         })
     }
 
@@ -477,7 +547,17 @@ async fn main() -> Result<()> {
 
     info!("🚀 Historical Data Collector Starting");
 
-    let collector = DataCollector::new("historical_tokens.db".to_string());
+    let config = Config::from_env()?;
+    let price_feed = PriceFeed::new()?;
+    let jupiter = JupiterService::new()?;
+    let solana = Arc::new(SolanaConnection::new(&config.rpc.url, &config.wallet.private_key)?);
+
+    let collector = DataCollector::new(
+        "historical_tokens.db".to_string(),
+        price_feed,
+        jupiter,
+        solana,
+    );
 
     // Initialize database
     collector.init_database()?;

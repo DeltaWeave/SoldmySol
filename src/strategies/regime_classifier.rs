@@ -9,7 +9,8 @@
 /// Priority: NewPair > Momentum > MeanReversion > Majors
 
 use crate::models::TokenPool;
-use crate::strategies::{VolumeProfile, VolumeTrend};
+use crate::strategies::{VolumeProfile, VolumeTrend, TimeframeAnalyzer};
+use chrono::Utc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Regime {
@@ -291,10 +292,20 @@ trait TokenAge {
 
 impl TokenAge for TokenPool {
     fn age_hours(&self) -> f64 {
-        // Calculate age based on creation time if available
-        // For now, assume we have age_minutes in pool data
-        // This would come from the pool scanner
-        1.0  // Placeholder - would be calculated from pool.created_at
+        if let Some(created_at) = self.created_at {
+            let created_ms = if created_at > 1_000_000_000_000 {
+                created_at
+            } else {
+                created_at * 1000
+            };
+
+            let now_ms = Utc::now().timestamp_millis();
+            let age_ms = now_ms.saturating_sub(created_ms);
+            (age_ms as f64) / (1000.0 * 60.0 * 60.0)
+        } else {
+            // Unknown age -> treat as older to avoid misclassifying as NewPair
+            24.0
+        }
     }
 }
 
@@ -304,18 +315,43 @@ trait TimeframeDivergence {
     fn has_divergence(&self) -> bool;
 }
 
-// Placeholder struct - would use actual MultiTimeframeAnalyzer
-pub struct TimeframeAnalyzer;
-
 impl TimeframeDivergence for TimeframeAnalyzer {
     fn count_bullish_timeframes(&self) -> u32 {
-        // Would count how many timeframes are bullish
-        0
+        let now = Utc::now().timestamp_millis();
+        if let Some(analysis) = self.analyze(now) {
+            let mut bullish = 0;
+            if analysis.five_minute.trend.is_bullish() {
+                bullish += 1;
+            }
+            if analysis.fifteen_minute.trend.is_bullish() {
+                bullish += 1;
+            }
+            if analysis.one_hour.trend.is_bullish() {
+                bullish += 1;
+            }
+            bullish
+        } else {
+            0
+        }
     }
 
     fn has_divergence(&self) -> bool {
-        // Would detect if short and long timeframes disagree
-        false
+        let now = Utc::now().timestamp_millis();
+        if let Some(analysis) = self.analyze(now) {
+            let short_bull = analysis.five_minute.trend.is_bullish();
+            let short_bear = analysis.five_minute.trend.is_bearish();
+            let mid_bull = analysis.fifteen_minute.trend.is_bullish();
+            let mid_bear = analysis.fifteen_minute.trend.is_bearish();
+            let long_bull = analysis.one_hour.trend.is_bullish();
+            let long_bear = analysis.one_hour.trend.is_bearish();
+
+            (short_bull && long_bear)
+                || (short_bear && long_bull)
+                || (short_bull && mid_bear)
+                || (short_bear && mid_bull)
+        } else {
+            false
+        }
     }
 }
 

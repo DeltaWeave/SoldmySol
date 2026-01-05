@@ -131,6 +131,8 @@ impl RegimeBacktester {
                 liquidity_sol: trade.liquidity_sol,
                 liquidity_usd: trade.liquidity_sol * 100.0,
                 price_usd: trade.entry_price,
+                volume_1h: trade.volume_24h / 24.0,
+                volume_6h: trade.volume_24h / 4.0,
                 volume_24h: trade.volume_24h,
                 price_change_24h: 0.0,
                 created_at: Some(trade.timestamp),
@@ -138,6 +140,8 @@ impl RegimeBacktester {
 
             // Classify regime
             let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+                pool.volume_1h,
+                pool.volume_6h,
                 pool.volume_24h,
                 pool.liquidity_sol,
             );
@@ -205,6 +209,8 @@ impl RegimeBacktester {
             // Simulate edge calculation
             // Higher volume quality = higher expected edge
             let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+                trade.volume_24h / 24.0,
+                trade.volume_24h / 4.0,
                 trade.volume_24h,
                 trade.liquidity_sol,
             );
@@ -262,12 +268,16 @@ impl RegimeBacktester {
                 liquidity_sol: trade.liquidity_sol,
                 liquidity_usd: trade.liquidity_sol * 100.0,
                 price_usd: trade.entry_price,
+                volume_1h: trade.volume_24h / 24.0,
+                volume_6h: trade.volume_24h / 4.0,
                 volume_24h: trade.volume_24h,
                 price_change_24h: 0.0,
                 created_at: Some(trade.timestamp),
             };
 
             let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+                pool.volume_1h,
+                pool.volume_6h,
                 pool.volume_24h,
                 pool.liquidity_sol,
             );
@@ -339,12 +349,16 @@ impl RegimeBacktester {
                 liquidity_sol: trade.liquidity_sol,
                 liquidity_usd: trade.liquidity_sol * 100.0,
                 price_usd: trade.entry_price,
+                volume_1h: trade.volume_24h / 24.0,
+                volume_6h: trade.volume_24h / 4.0,
                 volume_24h: trade.volume_24h,
                 price_change_24h: 0.0,
                 created_at: Some(trade.timestamp),
             };
 
             let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+                pool.volume_1h,
+                pool.volume_6h,
                 pool.volume_24h,
                 pool.liquidity_sol,
             );

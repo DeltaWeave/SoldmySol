@@ -2,16 +2,19 @@
 // Provides live visibility into bot health, performance, and risk metrics
 
 use crate::config::Config;
-use crate::services::Database;
+use crate::services::{Database, SolanaConnection};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
 
 pub struct MonitoringDashboard {
     db: Arc<RwLock<Database>>,
     config: Arc<RwLock<Config>>,
+    solana: Arc<SolanaConnection>,
     start_time: SystemTime,
+    rpc_failures: Arc<RwLock<VecDeque<SystemTime>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,11 +63,17 @@ pub enum RiskLevel {
 }
 
 impl MonitoringDashboard {
-    pub fn new(db: Arc<RwLock<Database>>, config: Arc<RwLock<Config>>) -> Self {
+    pub fn new(
+        db: Arc<RwLock<Database>>,
+        config: Arc<RwLock<Config>>,
+        solana: Arc<SolanaConnection>,
+    ) -> Self {
         Self {
             db,
             config,
+            solana,
             start_time: SystemTime::now(),
+            rpc_failures: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
@@ -91,11 +100,21 @@ impl MonitoringDashboard {
         // Calculate risk level
         let risk_level = self.calculate_risk_level(&stats_today, &config);
 
-        // Check RPC health (simplified - would need actual RPC metrics in production)
-        let rpc_health = RpcHealth {
-            is_connected: true,
-            avg_latency_ms: 200,
-            failed_requests_last_hour: 0,
+        // Check RPC health using live RPC data
+        let rpc_health = match self.solana.check_health().await {
+            Ok(health) => RpcHealth {
+                is_connected: health.healthy,
+                avg_latency_ms: health.latency,
+                failed_requests_last_hour: self.count_recent_failures().await,
+            },
+            Err(_) => {
+                self.record_rpc_failure().await;
+                RpcHealth {
+                    is_connected: false,
+                    avg_latency_ms: 0,
+                    failed_requests_last_hour: self.count_recent_failures().await,
+                }
+            }
         };
 
         let last_trade_timestamp = recent_trades.first().map(|t| t.entry_time);
@@ -121,6 +140,31 @@ impl MonitoringDashboard {
             largest_loss_today: stats_today.largest_loss,
             consecutive_losses: stats_today.consecutive_losses,
         })
+    }
+
+    async fn record_rpc_failure(&self) {
+        let mut failures = self.rpc_failures.write().await;
+        failures.push_back(SystemTime::now());
+        self.trim_failures(&mut failures);
+    }
+
+    async fn count_recent_failures(&self) -> usize {
+        let mut failures = self.rpc_failures.write().await;
+        self.trim_failures(&mut failures);
+        failures.len()
+    }
+
+    fn trim_failures(&self, failures: &mut VecDeque<SystemTime>) {
+        let cutoff = SystemTime::now()
+            .checked_sub(Duration::from_secs(60 * 60))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        while let Some(ts) = failures.front() {
+            if *ts < cutoff {
+                failures.pop_front();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Display dashboard in terminal

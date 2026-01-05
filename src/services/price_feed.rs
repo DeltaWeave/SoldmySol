@@ -43,6 +43,8 @@ struct Liquidity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Volume {
+    h1: Option<f64>,
+    h6: Option<f64>,
     h24: Option<f64>,
 }
 
@@ -300,6 +302,8 @@ impl PriceFeed {
                             .as_ref()
                             .and_then(|p| p.parse().ok())
                             .unwrap_or(0.0),
+                        volume_1h: pair.volume.as_ref().and_then(|v| v.h1).unwrap_or(0.0),
+                        volume_6h: pair.volume.as_ref().and_then(|v| v.h6).unwrap_or(0.0),
                         volume_24h: pair.volume.as_ref().and_then(|v| v.h24).unwrap_or(0.0),
                         price_change_24h: pair
                             .price_change
@@ -380,6 +384,8 @@ impl PriceFeed {
                         .as_ref()
                         .and_then(|p| p.parse().ok())
                         .unwrap_or(0.0),
+                    volume_1h: pair.volume.as_ref().and_then(|v| v.h1).unwrap_or(0.0),
+                    volume_6h: pair.volume.as_ref().and_then(|v| v.h6).unwrap_or(0.0),
                     volume_24h: pair.volume.as_ref().and_then(|v| v.h24).unwrap_or(0.0),
                     price_change_24h: pair
                         .price_change
@@ -487,6 +493,8 @@ impl PriceFeed {
                         liquidity_usd: 0.0, // Not easily calculable without pool parsing
                         liquidity_sol: account_info.lamports as f64 / 1_000_000_000.0,
                         price_usd,
+                        volume_1h: 0.0,
+                        volume_6h: 0.0,
                         volume_24h: 0.0,
                         price_change_24h: 0.0,
                         created_at: Some(chrono::Utc::now().timestamp_millis()),
@@ -509,6 +517,8 @@ impl PriceFeed {
     fn extract_token_mint_from_pool(&self, data: &[u8], program_name: &str) -> Result<Option<String>> {
         use solana_sdk::pubkey::Pubkey;
 
+        const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
         // For Pump.fun bonding curves, token mint is at offset 8 (after discriminator)
         if program_name == "PumpFun" && data.len() >= 40 {
             let mint_bytes = &data[8..40];
@@ -517,17 +527,34 @@ impl PriceFeed {
             }
         }
 
-        // For Raydium AMM, token mints are at specific offsets
-        // This is a simplified version - full implementation would need proper deserialization
-        if program_name.contains("Raydium") && data.len() >= 400 {
-            // Raydium AMM V4: base_mint at offset ~400, quote_mint at ~432
-            // This is approximate - would need proper struct deserialization
-            let base_mint_bytes = &data[400..432];
-            if let Ok(mint) = Pubkey::try_from(base_mint_bytes) {
-                // Check if it's not SOL (we want the token, not SOL)
-                if mint.to_string() != "So11111111111111111111111111111111111111112" {
-                    return Ok(Some(mint.to_string()));
-                }
+        if program_name.contains("RaydiumCLMM") && data.len() >= 136 {
+            let mint_a = Pubkey::new_from_array(data[8..40].try_into().unwrap_or([0u8; 32]));
+            let mint_b = Pubkey::new_from_array(data[40..72].try_into().unwrap_or([0u8; 32]));
+
+            let candidate = if mint_a.to_string() == WSOL_MINT {
+                mint_b
+            } else {
+                mint_a
+            };
+            return Ok(Some(candidate.to_string()));
+        }
+
+        if program_name.contains("OrcaWhirlpool") && data.len() >= 136 {
+            let mint_a = Pubkey::new_from_array(data[40..72].try_into().unwrap_or([0u8; 32]));
+            let mint_b = Pubkey::new_from_array(data[72..104].try_into().unwrap_or([0u8; 32]));
+
+            let candidate = if mint_a.to_string() == WSOL_MINT {
+                mint_b
+            } else {
+                mint_a
+            };
+            return Ok(Some(candidate.to_string()));
+        }
+
+        if program_name.contains("Raydium") && data.len() >= 432 {
+            let base_mint = Pubkey::new_from_array(data[400..432].try_into().unwrap_or([0u8; 32]));
+            if base_mint.to_string() != WSOL_MINT {
+                return Ok(Some(base_mint.to_string()));
             }
         }
 
