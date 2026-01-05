@@ -113,6 +113,7 @@ impl MomentumTrader {
         price_feed: Arc<PriceFeed>,
         db: Arc<Database>,
     ) -> Self {
+        let scan_interval_secs = config.momentum.scan_interval_secs;
         Self {
             config,
             solana,
@@ -121,7 +122,7 @@ impl MomentumTrader {
             db,
             pattern_detectors: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             active_positions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            scan_interval_secs: 60, // Scan every 60 seconds
+            scan_interval_secs,
         }
     }
 
@@ -131,6 +132,12 @@ impl MomentumTrader {
         info!("   Scan Interval: {}s", self.scan_interval_secs);
         info!("   Min Liquidity: {} SOL", self.config.sniper.min_liquidity_sol);
         info!("   Position Size: {} SOL", self.config.sniper.snipe_amount_sol);
+        info!(
+            "   Momentum Filters: min ${:.0} volume | min ${:.0} liquidity | min {:.1}% change",
+            self.config.momentum.min_volume_24h_usd,
+            self.config.momentum.min_liquidity_usd,
+            self.config.momentum.min_price_change_24h_pct
+        );
 
         loop {
             // 1. Scan for trending tokens
@@ -180,7 +187,16 @@ impl MomentumTrader {
         let mut candidates = Vec::new();
 
         if let Some(pairs) = data.pairs {
-            for pair in pairs.iter().take(20) { // Top 20 trending
+            let mut ranked_pairs: Vec<&DexScreenerPair> = pairs.iter().collect();
+            ranked_pairs.sort_by(|a, b| {
+                let a_volume = a.volume.as_ref().map(|v| v.h24).unwrap_or(0.0);
+                let b_volume = b.volume.as_ref().map(|v| v.h24).unwrap_or(0.0);
+                b_volume
+                    .partial_cmp(&a_volume)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            for pair in ranked_pairs.iter().take(self.config.momentum.max_candidates) {
                 // Filter criteria
                 let price_usd = pair.price_usd
                     .as_ref()
@@ -202,12 +218,18 @@ impl MomentumTrader {
                     .and_then(|l| l.usd)
                     .unwrap_or(0.0);
 
+                if pair.chain_id != "solana" {
+                    continue;
+                }
+
                 // Filter: Must have minimum liquidity and positive price change
                 // Convert USD liquidity to SOL (rough estimate: 1 SOL = $200)
                 let liquidity_sol = liquidity_usd / 200.0;
                 if liquidity_sol >= self.config.sniper.min_liquidity_sol
-                    && price_change_24h > 0.0
-                    && volume_24h > 10000.0 { // Min $10k volume
+                    && price_change_24h >= self.config.momentum.min_price_change_24h_pct
+                    && volume_24h >= self.config.momentum.min_volume_24h_usd
+                    && liquidity_usd >= self.config.momentum.min_liquidity_usd
+                {
 
                     candidates.push(MomentumCandidate {
                         token_mint: pair.base_token.address.clone(),
