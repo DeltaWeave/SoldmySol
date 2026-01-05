@@ -387,7 +387,7 @@ impl ProgramMonitor {
         };
 
         // Extract accounts from transaction
-        use solana_transaction_status::{EncodedTransaction, UiMessage, UiParsedMessage};
+        use solana_transaction_status::{EncodedTransaction, UiMessage};
 
         if let EncodedTransaction::Json(ui_tx) = transaction.transaction.transaction {
             if let UiMessage::Parsed(parsed_msg) = ui_tx.message {
@@ -487,7 +487,7 @@ impl ProgramMonitor {
     fn extract_pool_address(&self, logs: &[String]) -> Option<String> {
         // Strategy 1: Look for "Program invoke" followed by address
         // Format: "Program <PROGRAM_ID> invoke [1]" then "Program log: Initialize <POOL_ADDRESS>"
-        for (i, log) in logs.iter().enumerate() {
+        for (_i, log) in logs.iter().enumerate() {
             // Look for initialization patterns with addresses
             if log.contains("Program log:") || log.contains("Program data:") {
                 // Extract addresses from this line and next few lines

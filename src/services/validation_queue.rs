@@ -246,7 +246,7 @@ impl ValidationQueue {
         let mut states = self.states.write().await;
 
         let mut to_remove = Vec::new();
-        let now = Instant::now();
+        let _now = Instant::now();
 
         for (token, state) in states.iter() {
             // Remove if:

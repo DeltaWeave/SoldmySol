@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
 use std::env;
 
 #[derive(Debug, Clone)]
@@ -268,7 +267,7 @@ impl Config {
             path: env::var("DB_PATH").unwrap_or_else(|_| "./data/trades.db".to_string()),
         };
 
-        let mut config = Config {
+        let config = Config {
             rpc,
             wallet,
             capital,

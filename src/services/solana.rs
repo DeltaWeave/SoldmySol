@@ -9,7 +9,6 @@ use solana_sdk::{
     signature::{Keypair, Signature, Signer},
     transaction::Transaction,
 };
-use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 use zeroize::Zeroize;
@@ -300,7 +299,7 @@ impl SolanaConnection {
     }
 
     /// Estimate total transaction cost including rent, fees, and priority
-    pub async fn estimate_transaction_cost(&self, snipe_amount_sol: f64) -> Result<f64> {
+    pub async fn estimate_transaction_cost(&self, _snipe_amount_sol: f64) -> Result<f64> {
         let priority_fee = self.estimate_priority_fee(50000).await;
         let base_fee = 5000; // 0.000005 SOL base transaction fee
         let rent_exempt = 2039280; // ~0.002 SOL for token account rent

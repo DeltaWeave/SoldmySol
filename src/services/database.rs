@@ -1,5 +1,5 @@
-use crate::models::{AllTimeStats, Position, Trade};
-use anyhow::{anyhow, Context, Result};
+use crate::models::{AllTimeStats, Trade};
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use tracing::info;

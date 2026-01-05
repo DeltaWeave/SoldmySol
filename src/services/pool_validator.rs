@@ -8,10 +8,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use solana_client::rpc_client::RpcClient;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use bytemuck::{Pod, Zeroable};
 
 /// Minimum liquidity thresholds (in lamports)
@@ -233,7 +233,7 @@ impl PoolValidator {
     async fn validate_raydium_clmm(
         &self,
         pool_address: &str,
-        snipe_amount_sol: f64,
+        _snipe_amount_sol: f64,
     ) -> Result<PoolAccountStatus> {
         let pool_pubkey = Pubkey::from_str(pool_address)
             .context("Invalid pool address")?;
@@ -356,7 +356,7 @@ impl PoolValidator {
     async fn validate_orca_whirlpool(
         &self,
         pool_address: &str,
-        snipe_amount_sol: f64,
+        _snipe_amount_sol: f64,
     ) -> Result<PoolAccountStatus> {
         let pool_pubkey = Pubkey::from_str(pool_address)
             .context("Invalid pool address")?;

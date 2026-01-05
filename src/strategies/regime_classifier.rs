@@ -201,7 +201,7 @@ impl RegimeClassifier {
     }
 
     fn check_mean_reversion(
-        pool: &TokenPool,
+        _pool: &TokenPool,
         volume_profile: &VolumeProfile,
         timeframe_analysis: Option<&TimeframeAnalyzer>,
     ) -> Option<RegimeClassification> {

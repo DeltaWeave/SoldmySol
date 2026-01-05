@@ -131,7 +131,7 @@ impl PumpfunTokenSniper {
         info!("   Monitoring: Token CREATION events on bonding curve");
 
         // Spawn position monitor
-        let monitor_handle = self.spawn_position_monitor();
+        let _monitor_handle = self.spawn_position_monitor();
 
         // Subscribe to Pump.fun program logs
         loop {

@@ -2,11 +2,11 @@ use crate::config::Config;
 use crate::models::{Position, SafetyCheckResult, TokenPool};
 use crate::services::{
     Database, JupiterService, PriceFeed, PriceCache, SolanaConnection, ProfitSweepManager,
-    ProgramMonitor, NewPoolEvent, SniperValidator, TxTemplateCache,
+    ProgramMonitor, TxTemplateCache,
     ValidationQueue, ValidationStatus, PoolValidator, PoolAccountStatus, DirectDexSwap,
 };
 use crate::strategies::{SentimentAnalyzer, VolumeAnalyzer, PatternDetector, TimeframeAnalyzer, PriceTracker, CircuitBreaker, RegimeClassifier, RegimePlaybook};
-use crate::ml::{MLTrainer, TrainingConfig, TrainingDataCollector, FeatureExtractor};
+use crate::ml::{MLTrainer, TrainingConfig, FeatureExtractor};
 use anyhow::{anyhow, Result};
 use lru::LruCache;
 use solana_sdk::pubkey::Pubkey;
@@ -15,7 +15,7 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 pub struct TokenSniper {
@@ -569,24 +569,9 @@ impl TokenSniper {
 
     fn spawn_realtime_monitor(&self) {
         let config = self.config.clone();
-        let price_feed = self.price_feed.clone();
         let monitored_tokens = self.monitored_tokens.clone();
         let is_running = self.is_running.clone();
 
-        // Clone ALL self components needed for full evaluation
-        let solana = self.solana.clone();
-        let jupiter = self.jupiter.clone();
-        let db = self.db.clone();
-        let active_positions = self.active_positions.clone();
-        let circuit_breaker = self.circuit_breaker.clone();
-        let daily_pnl = self.daily_pnl.clone();
-        let pattern_detectors = self.pattern_detectors.clone();
-        let timeframe_analyzers = self.timeframe_analyzers.clone();
-        let ml_trainer = self.ml_trainer.clone();
-        let price_cache = self.price_cache.clone();
-        let sentiment_analyzer = self.sentiment_analyzer.clone();
-        let profit_sweep = self.profit_sweep.clone();
-        let tx_template_cache = self.tx_template_cache.clone();
         let validation_queue = self.validation_queue.clone();
 
         tokio::spawn(async move {
@@ -1891,7 +1876,7 @@ impl TokenSniper {
             return Ok(());
         }
 
-        let price_change = ((current_price - position.entry_price) / position.entry_price) * 100.0;
+        let _price_change = ((current_price - position.entry_price) / position.entry_price) * 100.0;
         let current_value = position.tokens_bought * current_price;
         let pnl_sol = current_value - position.amount_sol;
         let pnl_percent = (pnl_sol / position.amount_sol) * 100.0;
@@ -2053,7 +2038,7 @@ impl TokenSniper {
     async fn exit_position(
         position: &Position,
         exit_price: f64,
-        reason: &str,
+        _reason: &str,
         solana: &Arc<SolanaConnection>,
         jupiter: &Arc<JupiterService>,
         db: &Arc<RwLock<Database>>,
@@ -2146,7 +2131,7 @@ impl TokenSniper {
 
             // ⭐ ML LEARNING: Record trade outcome for model improvement
             if let Some(ref feature_values) = position.ml_features {
-                use crate::ml::{FeatureVector, TrainingDataCollector, TrainingSample};
+                use crate::ml::{FeatureVector, TrainingSample};
 
                 // Reconstruct feature vector from stored values
                 let mut features_array = [0.0; 15];

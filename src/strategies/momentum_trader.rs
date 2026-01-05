@@ -7,7 +7,7 @@
 /// - Executes trades on tokens with confirmed liquidity
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -17,7 +17,7 @@ use crate::config::Config;
 use crate::services::{Database, JupiterService, PriceFeed, SolanaConnection};
 use crate::services::jupiter::SOL_MINT;
 use crate::strategies::route_validation::validate_entry_exit_routes;
-use crate::strategies::{PatternDetector, Pattern, TradeRecommendation, PricePoint};
+use crate::strategies::{PatternDetector, TradeRecommendation};
 
 /// Token candidate for momentum trading
 #[derive(Debug, Clone)]
@@ -346,7 +346,7 @@ impl MomentumTrader {
     async fn execute_entry(
         &self,
         candidate: &MomentumCandidate,
-        pattern: &crate::strategies::PatternResult,
+        _pattern: &crate::strategies::PatternResult,
     ) -> Result<()> {
         info!("🚀 EXECUTING ENTRY: {} at ${:.6}", candidate.symbol, candidate.price_usd);
 
