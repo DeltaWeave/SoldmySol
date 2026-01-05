@@ -354,10 +354,8 @@ impl JupiterService {
                 // Receiving tokens
                 match Pubkey::from_str(output_mint) {
                     Ok(output_pubkey) => {
-                        let balance = solana.get_token_balance(&output_pubkey).await?;
-                        // Token balance is already adjusted for decimals, need to convert back
-                        // This is approximate - in production you'd need exact decimals
-                        (balance * 1_000_000_000.0) as u64
+                        let (balance, _decimals) = solana.get_token_balance_raw(&output_pubkey).await?;
+                        balance
                     }
                     Err(_) => {
                         warn!("⚠️  Could not parse output mint, skipping slippage check");
