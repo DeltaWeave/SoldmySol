@@ -7,7 +7,7 @@
 /// - Frequency: Once per threshold
 /// - Capital Protection: Reset risk if equity drops below last swept balance
 
-use crate::config::{Config, WalletConfig};
+use crate::config::Config;
 use crate::services::SolanaConnection;
 use anyhow::{anyhow, Result};
 use solana_sdk::pubkey::Pubkey;
@@ -160,14 +160,11 @@ impl ProfitSweepManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_sweep_threshold_logic() {
         // Test: 100 SOL -> 125 SOL = 25% growth -> sweep 25% of 25 SOL profit = 6.25 SOL
         let initial = 100.0;
         let current = 125.0;
-        let threshold_pct = 25.0;
         let sweep_pct = 25.0;
 
         let growth = ((current - initial) / initial) * 100.0;

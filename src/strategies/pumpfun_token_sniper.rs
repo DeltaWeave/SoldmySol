@@ -23,7 +23,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::services::{Database, JupiterService, PumpFunSwap, SolanaConnection};
+use crate::services::{Database, JupiterService, PumpFunSwap, SolanaConnection, TokenSafetyChecker};
 use crate::services::jupiter::SOL_MINT;
 use crate::strategies::route_validation::validate_entry_exit_routes;
 use solana_sdk::pubkey::Pubkey;
@@ -84,6 +84,7 @@ pub struct PumpfunTokenSniper {
     solana: Arc<SolanaConnection>,
     jupiter: Arc<JupiterService>,
     pumpfun: Arc<PumpFunSwap>,
+    token_safety: Arc<TokenSafetyChecker>,
     db: Arc<Database>,
 
     /// Active positions
@@ -107,11 +108,13 @@ impl PumpfunTokenSniper {
         pumpfun: Arc<PumpFunSwap>,
         db: Arc<Database>,
     ) -> Self {
+        let token_safety = Arc::new(TokenSafetyChecker::new(solana.clone()));
         Self {
             config,
             solana,
             jupiter,
             pumpfun,
+            token_safety,
             db,
             active_positions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             seen_signatures: Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new())),
@@ -128,7 +131,7 @@ impl PumpfunTokenSniper {
         info!("   Monitoring: Token CREATION events on bonding curve");
 
         // Spawn position monitor
-        let monitor_handle = self.spawn_position_monitor();
+        let _monitor_handle = self.spawn_position_monitor();
 
         // Subscribe to Pump.fun program logs
         loop {
@@ -364,11 +367,47 @@ impl PumpfunTokenSniper {
         }
 
         // Basic validation
-        // TODO: Add more sophisticated checks:
-        // - Creator reputation
-        // - Token metadata quality
-        // - Initial liquidity amount
-        // - Social signals
+        if candidate.symbol.as_deref().unwrap_or("").trim().is_empty()
+            || candidate.name.as_deref().unwrap_or("").trim().is_empty()
+        {
+            warn!("⛔ Missing token name/symbol metadata");
+            return Ok(());
+        }
+
+        if let Ok(mint) = Pubkey::from_str(&candidate.token_mint) {
+            let safety = self.token_safety.check_token_safety(&mint).await?;
+            if !safety.passed {
+                warn!(
+                    "⛔ Token safety checks failed (risk score: {})",
+                    safety.risk_score
+                );
+                return Ok(());
+            }
+        } else {
+            warn!("⛔ Invalid token mint: {}", candidate.token_mint);
+            return Ok(());
+        }
+
+        // Check bonding curve liquidity before sniping
+        if let Ok(snapshot) = self.pumpfun.get_curve_snapshot(&candidate.token_mint) {
+            if snapshot.real_sol_reserves < 0.1 {
+                warn!(
+                    "⛔ Low initial liquidity ({} SOL)",
+                    snapshot.real_sol_reserves
+                );
+                return Ok(());
+            }
+        }
+
+        // Honeypot test using Jupiter
+        if self
+            .token_safety
+            .check_honeypot(&self.jupiter, &candidate.token_mint, 1_000_000)
+            .await?
+        {
+            warn!("⛔ Honeypot detected for {}", candidate.token_mint);
+            return Ok(());
+        }
 
         info!("✅ Token passed basic validation");
 

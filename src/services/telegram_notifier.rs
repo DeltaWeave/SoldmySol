@@ -3,10 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
-use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
@@ -407,7 +404,6 @@ impl TelegramNotifier {
         loop {
             match self.bot
                 .send_message(self.chat_id, text)
-                .parse_mode(ParseMode::Markdown)
                 .await
             {
                 Ok(_) => {

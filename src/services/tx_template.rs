@@ -11,7 +11,6 @@
 use anyhow::{anyhow, Result};
 use solana_sdk::{
     pubkey::Pubkey,
-    signature::Keypair,
 };
 use std::sync::Arc;
 use std::time::Instant;

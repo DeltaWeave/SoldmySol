@@ -2,11 +2,11 @@ use crate::config::Config;
 use crate::models::{Position, SafetyCheckResult, TokenPool};
 use crate::services::{
     Database, JupiterService, PriceFeed, PriceCache, SolanaConnection, ProfitSweepManager,
-    ProgramMonitor, NewPoolEvent, SniperValidator, TxTemplateCache,
+    ProgramMonitor, TxTemplateCache,
     ValidationQueue, ValidationStatus, PoolValidator, PoolAccountStatus, DirectDexSwap,
 };
 use crate::strategies::{SentimentAnalyzer, VolumeAnalyzer, PatternDetector, TimeframeAnalyzer, PriceTracker, CircuitBreaker, RegimeClassifier, RegimePlaybook};
-use crate::ml::{MLTrainer, TrainingConfig, TrainingDataCollector, FeatureExtractor};
+use crate::ml::{MLTrainer, TrainingConfig, FeatureExtractor};
 use anyhow::{anyhow, Result};
 use lru::LruCache;
 use solana_sdk::pubkey::Pubkey;
@@ -15,7 +15,7 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 pub struct TokenSniper {
@@ -278,6 +278,7 @@ impl TokenSniper {
         let daily_pnl = self.daily_pnl.clone();
         let pattern_detectors = self.pattern_detectors.clone();
         let timeframe_analyzers = self.timeframe_analyzers.clone();
+        let price_trackers = self.price_trackers.clone();
         let ml_trainer = self.ml_trainer.clone();
         let price_cache = self.price_cache.clone();
         let sentiment_analyzer = self.sentiment_analyzer.clone();
@@ -523,6 +524,8 @@ impl TokenSniper {
                                 liquidity_usd: token_state.liquidity_sol.unwrap_or(0.0) * 150.0,
                                 liquidity_sol: token_state.liquidity_sol.unwrap_or(0.0),
                                 price_usd: price_per_token_sol * 150.0,
+                                volume_1h: 0.0,
+                                volume_6h: 0.0,
                                 volume_24h: 0.0,
                                 price_change_24h: 0.0,
                                 created_at: Some(chrono::Utc::now().timestamp_millis()),
@@ -540,6 +543,7 @@ impl TokenSniper {
                                 daily_pnl.clone(),
                                 pattern_detectors.clone(),
                                 timeframe_analyzers.clone(),
+                                price_trackers.clone(),
                                 ml_trainer.clone(),
                                 price_cache.clone(),
                                 sentiment_analyzer.clone(),
@@ -565,24 +569,9 @@ impl TokenSniper {
 
     fn spawn_realtime_monitor(&self) {
         let config = self.config.clone();
-        let price_feed = self.price_feed.clone();
         let monitored_tokens = self.monitored_tokens.clone();
         let is_running = self.is_running.clone();
 
-        // Clone ALL self components needed for full evaluation
-        let solana = self.solana.clone();
-        let jupiter = self.jupiter.clone();
-        let db = self.db.clone();
-        let active_positions = self.active_positions.clone();
-        let circuit_breaker = self.circuit_breaker.clone();
-        let daily_pnl = self.daily_pnl.clone();
-        let pattern_detectors = self.pattern_detectors.clone();
-        let timeframe_analyzers = self.timeframe_analyzers.clone();
-        let ml_trainer = self.ml_trainer.clone();
-        let price_cache = self.price_cache.clone();
-        let sentiment_analyzer = self.sentiment_analyzer.clone();
-        let profit_sweep = self.profit_sweep.clone();
-        let tx_template_cache = self.tx_template_cache.clone();
         let validation_queue = self.validation_queue.clone();
 
         tokio::spawn(async move {
@@ -776,6 +765,8 @@ impl TokenSniper {
         // ✅ PHASE 1: Volume Analysis
         info!("📊 Analyzing volume profile...");
         let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+            pool.volume_1h,
+            pool.volume_6h,
             pool.volume_24h,
             pool.liquidity_sol,
         );
@@ -799,13 +790,45 @@ impl TokenSniper {
 
         info!("  ✓ Volume analysis passed");
 
+        // Get current token price for timeframe + pattern analysis
+        let current_price = match self.price_feed
+            .get_token_price_jupiter(&self.jupiter, &pool.token_address)
+            .await
+        {
+            Ok(price) if price > 0.0 => {
+                info!("  Current Price: ${:.8}", price);
+                price
+            }
+            Ok(price) => {
+                warn!("  Invalid price received: {}", price);
+                0.0
+            }
+            Err(e) => {
+                warn!("  Cannot get price for analysis: {}", e);
+                0.0
+            }
+        };
+
         // ✅ CRITICAL FIX #4: Regime Classification
         info!("🎯 Classifying trading regime...");
-        let regime_classification = RegimeClassifier::classify(
-            &pool,
-            &volume_profile,
-            None  // TODO: Add timeframe_analysis when available
-        );
+        let regime_classification = {
+            let mut analyzers = self.timeframe_analyzers.write().await;
+            if !analyzers.contains(&pool.token_address) {
+                analyzers.put(pool.token_address.clone(), TimeframeAnalyzer::new());
+            }
+
+            let analyzer = analyzers.get_mut(&pool.token_address).unwrap();
+            if current_price > 0.0 {
+                let volume_point = if pool.volume_1h > 0.0 {
+                    pool.volume_1h / 60.0
+                } else {
+                    pool.volume_24h / 1440.0
+                };
+                analyzer.add_price(chrono::Utc::now().timestamp_millis(), current_price, volume_point);
+            }
+
+            RegimeClassifier::classify(&pool, &volume_profile, Some(analyzer))
+        };
 
         let playbook = regime_classification.playbook;
 
@@ -822,24 +845,6 @@ impl TokenSniper {
         }
 
         // ✅ PHASE 2: Pattern Detection (FIXED - now uses real prices)
-        // Get current token price for pattern analysis
-        let current_price = match self.price_feed
-            .get_token_price_jupiter(&self.jupiter, &pool.token_address)
-            .await
-        {
-            Ok(price) if price > 0.0 => {
-                info!("  Current Price: ${:.8}", price);
-                price
-            }
-            Ok(price) => {
-                warn!("  Invalid price received: {}", price);
-                0.0
-            }
-            Err(e) => {
-                warn!("  Cannot get price for pattern detection: {}", e);
-                0.0
-            }
-        };
 
         let pattern_result = if current_price > 0.0 {
             let mut detectors = self.pattern_detectors.write().await;
@@ -1300,7 +1305,8 @@ impl TokenSniper {
         circuit_breaker: Arc<RwLock<CircuitBreaker>>,
         daily_pnl: Arc<RwLock<f64>>,
         pattern_detectors: Arc<RwLock<LruCache<String, PatternDetector>>>,
-        _timeframe_analyzers: Arc<RwLock<LruCache<String, TimeframeAnalyzer>>>,
+        timeframe_analyzers: Arc<RwLock<LruCache<String, TimeframeAnalyzer>>>,
+        price_trackers: Arc<RwLock<LruCache<String, PriceTracker>>>,
         ml_trainer: Arc<RwLock<MLTrainer>>,
         price_cache: Arc<RwLock<PriceCache>>,
         _sentiment_tracker: Arc<RwLock<SentimentAnalyzer>>,
@@ -1332,6 +1338,8 @@ impl TokenSniper {
         // Volume Analysis
         info!("📊 Analyzing volume profile...");
         let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+            pool.volume_1h,
+            pool.volume_6h,
             pool.volume_24h,
             pool.liquidity_sol,
         );
@@ -1354,13 +1362,33 @@ impl TokenSniper {
 
         info!("  ✓ Volume analysis passed");
 
+        let current_price = match price_feed
+            .get_token_price_jupiter(&jupiter, &pool.token_address)
+            .await
+        {
+            Ok(price) if price > 0.0 => price,
+            Ok(_) => 0.0,
+            Err(_) => 0.0,
+        };
+
         // Regime Classification
         info!("🎯 Classifying trading regime...");
-        let regime_classification = RegimeClassifier::classify(
-            &pool,
-            &volume_profile,
-            None
-        );
+        let regime_classification = {
+            let mut analyzers = timeframe_analyzers.write().await;
+            if !analyzers.contains(&pool.token_address) {
+                analyzers.put(pool.token_address.clone(), TimeframeAnalyzer::new());
+            }
+            let analyzer = analyzers.get_mut(&pool.token_address).unwrap();
+            if current_price > 0.0 {
+                let volume_point = if pool.volume_1h > 0.0 {
+                    pool.volume_1h / 60.0
+                } else {
+                    pool.volume_24h / 1440.0
+                };
+                analyzer.add_price(chrono::Utc::now().timestamp_millis(), current_price, volume_point);
+            }
+            RegimeClassifier::classify(&pool, &volume_profile, Some(analyzer))
+        };
 
         let playbook = regime_classification.playbook;
 
@@ -1375,6 +1403,38 @@ impl TokenSniper {
         for reason in &regime_classification.reasons {
             info!("    {}", reason);
         }
+
+        let pattern_result = if current_price > 0.0 {
+            let mut detectors = pattern_detectors.write().await;
+            if !detectors.contains(&pool.token_address) {
+                detectors.put(pool.token_address.clone(), PatternDetector::new(20));
+            }
+            let detector = detectors.get_mut(&pool.token_address).unwrap();
+
+            let now = chrono::Utc::now().timestamp_millis();
+            detector.add_price_point(now, current_price, pool.volume_24h);
+            detector.detect_pattern()
+        } else {
+            crate::strategies::PatternResult {
+                pattern: crate::strategies::Pattern::None,
+                confidence: 0,
+                description: "Price unavailable".to_string(),
+                trade_recommendation: crate::strategies::TradeRecommendation::Hold,
+            }
+        };
+
+        let price_changes = if current_price > 0.0 {
+            let mut trackers = price_trackers.write().await;
+            if !trackers.contains(&pool.token_address) {
+                trackers.put(pool.token_address.clone(), PriceTracker::new(120));
+            }
+            let tracker = trackers.get_mut(&pool.token_address).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            tracker.add_price(now, current_price);
+            tracker.get_all_changes(current_price)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
 
         // ✅ ML LEARNING: Extract features for training later
         use crate::ml::FeatureExtractor;
@@ -1397,9 +1457,9 @@ impl TokenSniper {
             risk_score: 0,
         };
 
-        // Extract ML features (simplified - no pattern/price changes in standalone)
+        // Extract ML features
         let ml_features = FeatureExtractor::extract_features(
-            (0.0, 0.0, 0.0),  // No price changes available yet
+            price_changes,
             &volume_profile,
             pool.liquidity_sol,
             pool.volume_24h,
@@ -1407,12 +1467,7 @@ impl TokenSniper {
             0.0,  // No holder concentration data
             &safety_for_features,
             &sentiment,
-            &crate::strategies::PatternResult {
-                pattern: crate::strategies::Pattern::None,
-                confidence: 0,
-                description: "No pattern data".to_string(),
-                trade_recommendation: crate::strategies::TradeRecommendation::Hold,
-            },  // No pattern data
+            &pattern_result,
         );
 
         // Execute trade
@@ -1822,7 +1877,7 @@ impl TokenSniper {
             return Ok(());
         }
 
-        let price_change = ((current_price - position.entry_price) / position.entry_price) * 100.0;
+        let _price_change = ((current_price - position.entry_price) / position.entry_price) * 100.0;
         let current_value = position.tokens_bought * current_price;
         let pnl_sol = current_value - position.amount_sol;
         let pnl_percent = (pnl_sol / position.amount_sol) * 100.0;
@@ -1984,7 +2039,7 @@ impl TokenSniper {
     async fn exit_position(
         position: &Position,
         exit_price: f64,
-        reason: &str,
+        _reason: &str,
         solana: &Arc<SolanaConnection>,
         jupiter: &Arc<JupiterService>,
         db: &Arc<RwLock<Database>>,
@@ -2077,7 +2132,7 @@ impl TokenSniper {
 
             // ⭐ ML LEARNING: Record trade outcome for model improvement
             if let Some(ref feature_values) = position.ml_features {
-                use crate::ml::{FeatureVector, TrainingDataCollector, TrainingSample};
+                use crate::ml::{FeatureVector, TrainingSample};
 
                 // Reconstruct feature vector from stored values
                 let mut features_array = [0.0; 15];

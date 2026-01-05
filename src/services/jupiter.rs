@@ -6,10 +6,8 @@ use anyhow::{anyhow, Context, Result};
 use governor::{Quota, RateLimiter};
 use nonzero_ext::nonzero;
 use reqwest::Client;
-use solana_sdk::{
-    message::VersionedMessage, pubkey::Pubkey, signature::Signature,
-    transaction::VersionedTransaction,
-};
+use solana_sdk::{pubkey::Pubkey, signature::Signature, transaction::VersionedTransaction};
+use base64::Engine;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -192,7 +190,7 @@ impl JupiterService {
             info!("  ✓ Quote fresh: {}ms old (max: {}ms)", quote_age_before_build, max_quote_age_ms);
 
             // Step 2: Build swap transaction (with timing check)
-            let tx_build_start = Instant::now();
+            let _tx_build_start = Instant::now();
             info!("Building swap transaction...");
 
             // ⭐ P1.2: Calculate priority fee with aggressive escalation
@@ -252,14 +250,15 @@ impl JupiterService {
         // Step 3: Deserialize and sign transaction
         info!("Signing transaction...");
 
-        let transaction_bytes = base64::decode(&swap_data.swap_transaction)
+        let transaction_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&swap_data.swap_transaction)
             .context("Failed to decode transaction")?;
 
-        let mut transaction: VersionedTransaction = bincode::deserialize(&transaction_bytes)
+        let transaction: VersionedTransaction = bincode::deserialize(&transaction_bytes)
             .context("Failed to deserialize transaction")?;
 
         // Sign the transaction
-        let wallet = solana.get_wallet();
+        let _wallet = solana.get_wallet();
         // VersionedTransaction doesn't have sign/partial_sign - we need to send unsigned
         // The RPC will handle signing or we skip this step
         // For now, just proceed with the transaction as-is from Jupiter
@@ -354,10 +353,8 @@ impl JupiterService {
                 // Receiving tokens
                 match Pubkey::from_str(output_mint) {
                     Ok(output_pubkey) => {
-                        let balance = solana.get_token_balance(&output_pubkey).await?;
-                        // Token balance is already adjusted for decimals, need to convert back
-                        // This is approximate - in production you'd need exact decimals
-                        (balance * 1_000_000_000.0) as u64
+                        let (balance, _decimals) = solana.get_token_balance_raw(&output_pubkey).await?;
+                        balance
                     }
                     Err(_) => {
                         warn!("⚠️  Could not parse output mint, skipping slippage check");

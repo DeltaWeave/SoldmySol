@@ -7,7 +7,7 @@
 /// - Continuous learning (incremental updates)
 /// - Model persistence
 
-use super::features::{FeatureExtractor, FeatureVector, FeatureStats};
+use super::features::{FeatureVector, FeatureStats};
 use super::predictor::{LogisticRegression, ModelMetrics};
 use anyhow::Result;
 use std::collections::VecDeque;
@@ -126,7 +126,7 @@ impl MLTrainer {
         }
 
         // Normalize features
-        let mut normalized_samples: Vec<_> = self
+        let normalized_samples: Vec<_> = self
             .training_buffer
             .iter()
             .map(|sample| {

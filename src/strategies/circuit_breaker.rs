@@ -286,7 +286,7 @@ mod tests {
         let mut cb = CircuitBreaker::new(5);
 
         // Add more trades than max_history
-        for i in 0..10 {
+        for _i in 0..10 {
             cb.record_trade(100.0, 5.0);
         }
 

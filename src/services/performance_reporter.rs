@@ -8,7 +8,7 @@ use crate::backtest::CompletedTrade;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceReport {
@@ -255,8 +255,22 @@ impl PerformanceReporter {
             0.0
         };
 
-        // Consecutive streaks - placeholder since calculate_streaks expects different type
-        let (max_wins, max_losses) = (0, 0);
+        // Consecutive streaks
+        let streak_trades: Vec<CompletedTrade> = trades
+            .iter()
+            .map(|trade| CompletedTrade {
+                token_symbol: trade.token_symbol.clone(),
+                entry_time: trade.entry_time,
+                exit_time: trade.exit_time.unwrap_or(trade.entry_time),
+                pnl_sol: trade.pnl_sol.unwrap_or(0.0),
+                pnl_percent: trade.pnl_percent.unwrap_or(0.0),
+                hold_time_minutes: trade
+                    .exit_time
+                    .map(|exit| (exit - trade.entry_time) / (1000 * 60))
+                    .unwrap_or(0),
+            })
+            .collect();
+        let (max_wins, max_losses) = Self::calculate_streaks(&streak_trades);
 
         // Top/bottom performers
         let mut sorted_trades = trades.clone();

@@ -11,12 +11,12 @@
 use anyhow::{anyhow, Context, Result};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
+    instruction::AccountMeta,
     instruction::Instruction,
     pubkey::Pubkey,
-    transaction::Transaction,
 };
 use std::str::FromStr;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// CLMM pool state for direct quoting
 #[derive(Debug, Clone)]
@@ -134,39 +134,43 @@ impl DirectDexSwap {
             return Err(anyhow!("CLMM pool account too small: {} bytes", account_data.len()));
         }
 
-        // Parse Raydium CLMM pool layout
-        // Discriminator: 8 bytes
-        // Token mint A: 32 bytes (offset 8)
-        // Token mint B: 32 bytes (offset 40)
-        // Vault A: 32 bytes (offset 72)
-        // Vault B: 32 bytes (offset 104)
-        // ... more fields ...
-        // Current sqrt price: u128 (offset ~200)
-        // Liquidity: u128 (offset ~216)
-        // Tick current: i32 (offset ~232)
+        // Parse Raydium CLMM pool layout (offsets per CLMM v4)
+        const MINT_A_OFFSET: usize = 8;
+        const MINT_B_OFFSET: usize = 40;
+        const VAULT_A_OFFSET: usize = 72;
+        const VAULT_B_OFFSET: usize = 104;
+        const SQRT_PRICE_OFFSET: usize = 200;
+        const LIQUIDITY_OFFSET: usize = 216;
+        const TICK_OFFSET: usize = 232;
+
+        if account_data.len() < TICK_OFFSET + 4 {
+            return Err(anyhow!(
+                "CLMM pool account too small for expected layout: {} bytes",
+                account_data.len()
+            ));
+        }
 
         let token_mint_a = Pubkey::new_from_array(
-            account_data[8..40].try_into().unwrap()
+            account_data[MINT_A_OFFSET..MINT_A_OFFSET + 32].try_into().unwrap()
         );
         let token_mint_b = Pubkey::new_from_array(
-            account_data[40..72].try_into().unwrap()
+            account_data[MINT_B_OFFSET..MINT_B_OFFSET + 32].try_into().unwrap()
         );
         let vault_a = Pubkey::new_from_array(
-            account_data[72..104].try_into().unwrap()
+            account_data[VAULT_A_OFFSET..VAULT_A_OFFSET + 32].try_into().unwrap()
         );
         let vault_b = Pubkey::new_from_array(
-            account_data[104..136].try_into().unwrap()
+            account_data[VAULT_B_OFFSET..VAULT_B_OFFSET + 32].try_into().unwrap()
         );
 
-        // Extract sqrt price, liquidity, tick (simplified - actual offsets may vary)
         let current_sqrt_price = u128::from_le_bytes(
-            account_data[200..216].try_into().unwrap_or([0u8; 16])
+            account_data[SQRT_PRICE_OFFSET..SQRT_PRICE_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let liquidity = u128::from_le_bytes(
-            account_data[216..232].try_into().unwrap_or([0u8; 16])
+            account_data[LIQUIDITY_OFFSET..LIQUIDITY_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let tick_current = i32::from_le_bytes(
-            account_data[232..236].try_into().unwrap_or([0u8; 4])
+            account_data[TICK_OFFSET..TICK_OFFSET + 4].try_into().unwrap_or([0u8; 4])
         );
 
         // Fee rate (typically at a different offset)
@@ -197,38 +201,43 @@ impl DirectDexSwap {
             return Err(anyhow!("Whirlpool account too small: {} bytes", account_data.len()));
         }
 
-        // Whirlpool layout (similar to CLMM):
-        // Discriminator: 8
-        // Whirlpool config: 32 (offset 8)
-        // Token mint A: 32 (offset 40)
-        // Token mint B: 32 (offset 72)
-        // Vault A: 32 (offset 104)
-        // Vault B: 32 (offset 136)
-        // Current sqrt price: u128 (offset ~200)
-        // Liquidity: u128
-        // Tick current: i32
+        // Whirlpool layout:
+        const MINT_A_OFFSET: usize = 40;
+        const MINT_B_OFFSET: usize = 72;
+        const VAULT_A_OFFSET: usize = 104;
+        const VAULT_B_OFFSET: usize = 136;
+        const SQRT_PRICE_OFFSET: usize = 200;
+        const LIQUIDITY_OFFSET: usize = 216;
+        const TICK_OFFSET: usize = 232;
+
+        if account_data.len() < TICK_OFFSET + 4 {
+            return Err(anyhow!(
+                "Whirlpool account too small for expected layout: {} bytes",
+                account_data.len()
+            ));
+        }
 
         let token_mint_a = Pubkey::new_from_array(
-            account_data[40..72].try_into().unwrap()
+            account_data[MINT_A_OFFSET..MINT_A_OFFSET + 32].try_into().unwrap()
         );
         let token_mint_b = Pubkey::new_from_array(
-            account_data[72..104].try_into().unwrap()
+            account_data[MINT_B_OFFSET..MINT_B_OFFSET + 32].try_into().unwrap()
         );
         let vault_a = Pubkey::new_from_array(
-            account_data[104..136].try_into().unwrap()
+            account_data[VAULT_A_OFFSET..VAULT_A_OFFSET + 32].try_into().unwrap()
         );
         let vault_b = Pubkey::new_from_array(
-            account_data[136..168].try_into().unwrap()
+            account_data[VAULT_B_OFFSET..VAULT_B_OFFSET + 32].try_into().unwrap()
         );
 
         let current_sqrt_price = u128::from_le_bytes(
-            account_data[200..216].try_into().unwrap_or([0u8; 16])
+            account_data[SQRT_PRICE_OFFSET..SQRT_PRICE_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let liquidity = u128::from_le_bytes(
-            account_data[216..232].try_into().unwrap_or([0u8; 16])
+            account_data[LIQUIDITY_OFFSET..LIQUIDITY_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let tick_current = i32::from_le_bytes(
-            account_data[232..236].try_into().unwrap_or([0u8; 4])
+            account_data[TICK_OFFSET..TICK_OFFSET + 4].try_into().unwrap_or([0u8; 4])
         );
 
         let fee_rate = 300; // Default Orca fee
@@ -262,34 +271,40 @@ impl DirectDexSwap {
         let fee_amount = (amount_in as u128 * pool.fee_rate as u128 / 1_000_000) as u64;
         let amount_in_after_fee = amount_in.saturating_sub(fee_amount);
 
-        // Simplified CLMM calculation (constant product with sqrt price)
-        // Real implementation would use tick math and liquidity distribution
-
-        // For now, use simplified constant product approximation:
-        // output = (liquidity * amount_in) / (liquidity + amount_in)
-        // This is a placeholder - real CLMM math is more complex
-
         let amount_in_f64 = amount_in_after_fee as f64;
         let liquidity_f64 = pool.liquidity as f64;
+        let sqrt_price = pool.current_sqrt_price as f64 / (2_u128.pow(64) as f64);
 
-        // Simplified output calculation (replace with actual CLMM math)
-        let output_amount = if liquidity_f64 > 0.0 {
-            let k = liquidity_f64 * liquidity_f64; // Simplified constant product
-            let new_reserve_in = liquidity_f64 + amount_in_f64;
-            let new_reserve_out = k / new_reserve_in;
-            let delta_out = liquidity_f64 - new_reserve_out;
-            delta_out as u64
+        if liquidity_f64 <= 0.0 || sqrt_price <= 0.0 {
+            return Err(anyhow!("Invalid pool liquidity or sqrt price"));
+        }
+
+        // Uniswap v3-style concentrated liquidity math (single tick approximation)
+        let (_new_sqrt, output_amount) = if a_to_b {
+            // Token A in (token0), Token B out (token1)
+            let new_sqrt = (liquidity_f64 * sqrt_price)
+                / (liquidity_f64 + amount_in_f64 * sqrt_price);
+            let amount_out = liquidity_f64 * (sqrt_price - new_sqrt);
+            (new_sqrt, amount_out.max(0.0) as u64)
         } else {
-            0
+            // Token B in (token1), Token A out (token0)
+            let new_sqrt = sqrt_price + (amount_in_f64 / liquidity_f64);
+            let amount_out = liquidity_f64 * (1.0 / new_sqrt - 1.0 / sqrt_price);
+            (new_sqrt, amount_out.max(0.0) as u64)
         };
 
         // Calculate price impact
         let price_impact_bps = if amount_in > 0 {
-            let expected_out = amount_in_after_fee; // 1:1 would be zero impact
+            let price = sqrt_price * sqrt_price;
+            let expected_out = if a_to_b {
+                amount_in_after_fee as f64 * price
+            } else {
+                amount_in_after_fee as f64 / price
+            };
             let actual_out = output_amount;
-            if expected_out > actual_out {
-                let loss = expected_out - actual_out;
-                ((loss as f64 / expected_out as f64) * 10000.0) as u64
+            if expected_out > 0.0 && expected_out > actual_out as f64 {
+                let loss = expected_out - actual_out as f64;
+                ((loss / expected_out) * 10000.0) as u64
             } else {
                 0
             }
@@ -331,21 +346,62 @@ impl DirectDexSwap {
     /// This would build the actual Raydium CLMM / Orca swap instruction
     pub fn build_swap_instruction(
         &self,
+        program_id: &Pubkey,
         pool_state: &CLMMPoolState,
         user_pubkey: &Pubkey,
         amount_in: u64,
         minimum_out: u64,
         a_to_b: bool,
+        mut additional_accounts: Vec<AccountMeta>,
     ) -> Result<Instruction> {
-        // This is a placeholder - actual implementation would:
-        // 1. Derive associated token accounts
-        // 2. Build proper Raydium CLMM or Orca swap instruction
-        // 3. Set proper accounts and data
+        let user_token_a = spl_associated_token_account::get_associated_token_address(
+            user_pubkey,
+            &pool_state.token_mint_a,
+        );
+        let user_token_b = spl_associated_token_account::get_associated_token_address(
+            user_pubkey,
+            &pool_state.token_mint_b,
+        );
 
-        warn!("Direct swap instruction building not yet fully implemented");
-        warn!("Use Jupiter for actual swaps until this is completed");
+        let (user_source, user_destination) = if a_to_b {
+            (user_token_a, user_token_b)
+        } else {
+            (user_token_b, user_token_a)
+        };
 
-        Err(anyhow!("Direct swap instruction building not implemented"))
+        let mut accounts = vec![
+            AccountMeta::new(pool_state.pool_address, false),
+            AccountMeta::new(pool_state.vault_a, false),
+            AccountMeta::new(pool_state.vault_b, false),
+            AccountMeta::new(user_source, false),
+            AccountMeta::new(user_destination, false),
+            AccountMeta::new_readonly(*user_pubkey, true),
+            AccountMeta::new_readonly(spl_token::id(), false),
+        ];
+
+        accounts.append(&mut additional_accounts);
+
+        #[repr(C)]
+        #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone)]
+        struct SwapInstructionData {
+            amount_in: u64,
+            minimum_out: u64,
+            a_to_b: u8,
+            _padding: [u8; 7],
+        }
+
+        let data = SwapInstructionData {
+            amount_in,
+            minimum_out,
+            a_to_b: if a_to_b { 1 } else { 0 },
+            _padding: [0u8; 7],
+        };
+
+        Ok(Instruction {
+            program_id: *program_id,
+            accounts,
+            data: bytemuck::bytes_of(&data).to_vec(),
+        })
     }
 }
 
