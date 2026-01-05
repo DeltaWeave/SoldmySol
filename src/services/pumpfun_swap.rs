@@ -125,6 +125,7 @@ impl PumpFunSwap {
             &global_volume_accumulator,
             &user_volume_accumulator,
             &fee_config,
+            &bonding_curve_state,
             amount_sol,
             slippage_bps,
         )?;
@@ -304,6 +305,32 @@ impl PumpFunSwap {
         output as u64
     }
 
+    fn estimate_buy_output(&self, state: &BondingCurveState, amount_sol_lamports: u64) -> u64 {
+        let amount_in = amount_sol_lamports as u128;
+        let virtual_token = state.virtual_token_reserves as u128;
+        let virtual_sol = state.virtual_sol_reserves as u128;
+
+        if amount_in == 0 || virtual_sol == 0 {
+            return 0;
+        }
+
+        let output = (amount_in * virtual_token) / (virtual_sol + amount_in);
+        output as u64
+    }
+
+    fn estimate_buy_cost_for_tokens(&self, state: &BondingCurveState, amount_tokens: u64) -> u64 {
+        let tokens = amount_tokens as u128;
+        let virtual_token = state.virtual_token_reserves as u128;
+        let virtual_sol = state.virtual_sol_reserves as u128;
+
+        if tokens == 0 || virtual_token <= tokens {
+            return 0;
+        }
+
+        let sol_cost = (tokens * virtual_sol) / (virtual_token - tokens);
+        sol_cost as u64
+    }
+
     fn build_buy_instruction(
         &self,
         mint: &Pubkey,
@@ -315,6 +342,7 @@ impl PumpFunSwap {
         global_volume_accumulator: &Pubkey,
         user_volume_accumulator: &Pubkey,
         fee_config: &Pubkey,
+        bonding_curve_state: &BondingCurveState,
         amount_sol: f64,
         slippage_bps: u16,
     ) -> Result<Instruction> {
@@ -329,8 +357,18 @@ impl PumpFunSwap {
         // Convert SOL to lamports
         let amount_lamports = (amount_sol * 1_000_000_000.0) as u64;
 
-        // Calculate max slippage (simplified - should calculate expected tokens)
-        let max_sol_cost = amount_lamports + (amount_lamports * slippage_bps as u64 / 10000);
+        let expected_tokens = self.estimate_buy_output(bonding_curve_state, amount_lamports);
+        let min_tokens = expected_tokens.saturating_sub(
+            expected_tokens.saturating_mul(slippage_bps as u64) / 10_000,
+        );
+
+        let mut max_sol_cost = self.estimate_buy_cost_for_tokens(bonding_curve_state, min_tokens);
+        if max_sol_cost < amount_lamports {
+            max_sol_cost = amount_lamports;
+        }
+        if max_sol_cost == 0 {
+            max_sol_cost = amount_lamports + (amount_lamports * slippage_bps as u64 / 10_000);
+        }
 
         // Build instruction data: discriminator + amount + max_sol_cost + track_volume
         let mut data = Vec::new();

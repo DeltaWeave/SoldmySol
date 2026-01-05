@@ -542,6 +542,7 @@ impl TokenSniper {
                                 daily_pnl.clone(),
                                 pattern_detectors.clone(),
                                 timeframe_analyzers.clone(),
+                                price_trackers.clone(),
                                 ml_trainer.clone(),
                                 price_cache.clone(),
                                 sentiment_analyzer.clone(),
@@ -1416,6 +1417,38 @@ impl TokenSniper {
             info!("    {}", reason);
         }
 
+        let pattern_result = if current_price > 0.0 {
+            let mut detectors = pattern_detectors.write().await;
+            if !detectors.contains(&pool.token_address) {
+                detectors.put(pool.token_address.clone(), PatternDetector::new(20));
+            }
+            let detector = detectors.get_mut(&pool.token_address).unwrap();
+
+            let now = chrono::Utc::now().timestamp_millis();
+            detector.add_price_point(now, current_price, pool.volume_24h);
+            detector.detect_pattern()
+        } else {
+            crate::strategies::PatternResult {
+                pattern: crate::strategies::Pattern::None,
+                confidence: 0,
+                description: "Price unavailable".to_string(),
+                trade_recommendation: crate::strategies::TradeRecommendation::Hold,
+            }
+        };
+
+        let price_changes = if current_price > 0.0 {
+            let mut trackers = price_trackers.write().await;
+            if !trackers.contains(&pool.token_address) {
+                trackers.put(pool.token_address.clone(), PriceTracker::new(120));
+            }
+            let tracker = trackers.get_mut(&pool.token_address).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            tracker.add_price(now, current_price);
+            tracker.get_all_changes(current_price)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
         // ✅ ML LEARNING: Extract features for training later
         use crate::ml::FeatureExtractor;
         use crate::services::TokenSafetyCheck;
@@ -1437,9 +1470,9 @@ impl TokenSniper {
             risk_score: 0,
         };
 
-        // Extract ML features (simplified - no pattern/price changes in standalone)
+        // Extract ML features
         let ml_features = FeatureExtractor::extract_features(
-            (0.0, 0.0, 0.0),  // No price changes available yet
+            price_changes,
             &volume_profile,
             pool.liquidity_sol,
             pool.volume_24h,
@@ -1447,12 +1480,7 @@ impl TokenSniper {
             0.0,  // No holder concentration data
             &safety_for_features,
             &sentiment,
-            &crate::strategies::PatternResult {
-                pattern: crate::strategies::Pattern::None,
-                confidence: 0,
-                description: "No pattern data".to_string(),
-                trade_recommendation: crate::strategies::TradeRecommendation::Hold,
-            },  // No pattern data
+            &pattern_result,
         );
 
         // Execute trade

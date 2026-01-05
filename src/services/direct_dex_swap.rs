@@ -134,39 +134,43 @@ impl DirectDexSwap {
             return Err(anyhow!("CLMM pool account too small: {} bytes", account_data.len()));
         }
 
-        // Parse Raydium CLMM pool layout
-        // Discriminator: 8 bytes
-        // Token mint A: 32 bytes (offset 8)
-        // Token mint B: 32 bytes (offset 40)
-        // Vault A: 32 bytes (offset 72)
-        // Vault B: 32 bytes (offset 104)
-        // ... more fields ...
-        // Current sqrt price: u128 (offset ~200)
-        // Liquidity: u128 (offset ~216)
-        // Tick current: i32 (offset ~232)
+        // Parse Raydium CLMM pool layout (offsets per CLMM v4)
+        const MINT_A_OFFSET: usize = 8;
+        const MINT_B_OFFSET: usize = 40;
+        const VAULT_A_OFFSET: usize = 72;
+        const VAULT_B_OFFSET: usize = 104;
+        const SQRT_PRICE_OFFSET: usize = 200;
+        const LIQUIDITY_OFFSET: usize = 216;
+        const TICK_OFFSET: usize = 232;
+
+        if account_data.len() < TICK_OFFSET + 4 {
+            return Err(anyhow!(
+                "CLMM pool account too small for expected layout: {} bytes",
+                account_data.len()
+            ));
+        }
 
         let token_mint_a = Pubkey::new_from_array(
-            account_data[8..40].try_into().unwrap()
+            account_data[MINT_A_OFFSET..MINT_A_OFFSET + 32].try_into().unwrap()
         );
         let token_mint_b = Pubkey::new_from_array(
-            account_data[40..72].try_into().unwrap()
+            account_data[MINT_B_OFFSET..MINT_B_OFFSET + 32].try_into().unwrap()
         );
         let vault_a = Pubkey::new_from_array(
-            account_data[72..104].try_into().unwrap()
+            account_data[VAULT_A_OFFSET..VAULT_A_OFFSET + 32].try_into().unwrap()
         );
         let vault_b = Pubkey::new_from_array(
-            account_data[104..136].try_into().unwrap()
+            account_data[VAULT_B_OFFSET..VAULT_B_OFFSET + 32].try_into().unwrap()
         );
 
-        // Extract sqrt price, liquidity, tick (simplified - actual offsets may vary)
         let current_sqrt_price = u128::from_le_bytes(
-            account_data[200..216].try_into().unwrap_or([0u8; 16])
+            account_data[SQRT_PRICE_OFFSET..SQRT_PRICE_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let liquidity = u128::from_le_bytes(
-            account_data[216..232].try_into().unwrap_or([0u8; 16])
+            account_data[LIQUIDITY_OFFSET..LIQUIDITY_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let tick_current = i32::from_le_bytes(
-            account_data[232..236].try_into().unwrap_or([0u8; 4])
+            account_data[TICK_OFFSET..TICK_OFFSET + 4].try_into().unwrap_or([0u8; 4])
         );
 
         // Fee rate (typically at a different offset)
@@ -197,38 +201,43 @@ impl DirectDexSwap {
             return Err(anyhow!("Whirlpool account too small: {} bytes", account_data.len()));
         }
 
-        // Whirlpool layout (similar to CLMM):
-        // Discriminator: 8
-        // Whirlpool config: 32 (offset 8)
-        // Token mint A: 32 (offset 40)
-        // Token mint B: 32 (offset 72)
-        // Vault A: 32 (offset 104)
-        // Vault B: 32 (offset 136)
-        // Current sqrt price: u128 (offset ~200)
-        // Liquidity: u128
-        // Tick current: i32
+        // Whirlpool layout:
+        const MINT_A_OFFSET: usize = 40;
+        const MINT_B_OFFSET: usize = 72;
+        const VAULT_A_OFFSET: usize = 104;
+        const VAULT_B_OFFSET: usize = 136;
+        const SQRT_PRICE_OFFSET: usize = 200;
+        const LIQUIDITY_OFFSET: usize = 216;
+        const TICK_OFFSET: usize = 232;
+
+        if account_data.len() < TICK_OFFSET + 4 {
+            return Err(anyhow!(
+                "Whirlpool account too small for expected layout: {} bytes",
+                account_data.len()
+            ));
+        }
 
         let token_mint_a = Pubkey::new_from_array(
-            account_data[40..72].try_into().unwrap()
+            account_data[MINT_A_OFFSET..MINT_A_OFFSET + 32].try_into().unwrap()
         );
         let token_mint_b = Pubkey::new_from_array(
-            account_data[72..104].try_into().unwrap()
+            account_data[MINT_B_OFFSET..MINT_B_OFFSET + 32].try_into().unwrap()
         );
         let vault_a = Pubkey::new_from_array(
-            account_data[104..136].try_into().unwrap()
+            account_data[VAULT_A_OFFSET..VAULT_A_OFFSET + 32].try_into().unwrap()
         );
         let vault_b = Pubkey::new_from_array(
-            account_data[136..168].try_into().unwrap()
+            account_data[VAULT_B_OFFSET..VAULT_B_OFFSET + 32].try_into().unwrap()
         );
 
         let current_sqrt_price = u128::from_le_bytes(
-            account_data[200..216].try_into().unwrap_or([0u8; 16])
+            account_data[SQRT_PRICE_OFFSET..SQRT_PRICE_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let liquidity = u128::from_le_bytes(
-            account_data[216..232].try_into().unwrap_or([0u8; 16])
+            account_data[LIQUIDITY_OFFSET..LIQUIDITY_OFFSET + 16].try_into().unwrap_or([0u8; 16])
         );
         let tick_current = i32::from_le_bytes(
-            account_data[232..236].try_into().unwrap_or([0u8; 4])
+            account_data[TICK_OFFSET..TICK_OFFSET + 4].try_into().unwrap_or([0u8; 4])
         );
 
         let fee_rate = 300; // Default Orca fee
