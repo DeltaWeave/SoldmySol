@@ -523,6 +523,8 @@ impl TokenSniper {
                                 liquidity_usd: token_state.liquidity_sol.unwrap_or(0.0) * 150.0,
                                 liquidity_sol: token_state.liquidity_sol.unwrap_or(0.0),
                                 price_usd: price_per_token_sol * 150.0,
+                                volume_1h: 0.0,
+                                volume_6h: 0.0,
                                 volume_24h: 0.0,
                                 price_change_24h: 0.0,
                                 created_at: Some(chrono::Utc::now().timestamp_millis()),
@@ -776,6 +778,8 @@ impl TokenSniper {
         // ✅ PHASE 1: Volume Analysis
         info!("📊 Analyzing volume profile...");
         let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+            pool.volume_1h,
+            pool.volume_6h,
             pool.volume_24h,
             pool.liquidity_sol,
         );
@@ -799,13 +803,45 @@ impl TokenSniper {
 
         info!("  ✓ Volume analysis passed");
 
+        // Get current token price for timeframe + pattern analysis
+        let current_price = match self.price_feed
+            .get_token_price_jupiter(&self.jupiter, &pool.token_address)
+            .await
+        {
+            Ok(price) if price > 0.0 => {
+                info!("  Current Price: ${:.8}", price);
+                price
+            }
+            Ok(price) => {
+                warn!("  Invalid price received: {}", price);
+                0.0
+            }
+            Err(e) => {
+                warn!("  Cannot get price for analysis: {}", e);
+                0.0
+            }
+        };
+
         // ✅ CRITICAL FIX #4: Regime Classification
         info!("🎯 Classifying trading regime...");
-        let regime_classification = RegimeClassifier::classify(
-            &pool,
-            &volume_profile,
-            None  // TODO: Add timeframe_analysis when available
-        );
+        let regime_classification = {
+            let mut analyzers = self.timeframe_analyzers.write().await;
+            if !analyzers.contains(&pool.token_address) {
+                analyzers.put(pool.token_address.clone(), TimeframeAnalyzer::new());
+            }
+
+            let analyzer = analyzers.get_mut(&pool.token_address).unwrap();
+            if current_price > 0.0 {
+                let volume_point = if pool.volume_1h > 0.0 {
+                    pool.volume_1h / 60.0
+                } else {
+                    pool.volume_24h / 1440.0
+                };
+                analyzer.add_price(chrono::Utc::now().timestamp_millis(), current_price, volume_point);
+            }
+
+            RegimeClassifier::classify(&pool, &volume_profile, Some(analyzer))
+        };
 
         let playbook = regime_classification.playbook;
 
@@ -822,24 +858,6 @@ impl TokenSniper {
         }
 
         // ✅ PHASE 2: Pattern Detection (FIXED - now uses real prices)
-        // Get current token price for pattern analysis
-        let current_price = match self.price_feed
-            .get_token_price_jupiter(&self.jupiter, &pool.token_address)
-            .await
-        {
-            Ok(price) if price > 0.0 => {
-                info!("  Current Price: ${:.8}", price);
-                price
-            }
-            Ok(price) => {
-                warn!("  Invalid price received: {}", price);
-                0.0
-            }
-            Err(e) => {
-                warn!("  Cannot get price for pattern detection: {}", e);
-                0.0
-            }
-        };
 
         let pattern_result = if current_price > 0.0 {
             let mut detectors = self.pattern_detectors.write().await;
@@ -1300,7 +1318,7 @@ impl TokenSniper {
         circuit_breaker: Arc<RwLock<CircuitBreaker>>,
         daily_pnl: Arc<RwLock<f64>>,
         pattern_detectors: Arc<RwLock<LruCache<String, PatternDetector>>>,
-        _timeframe_analyzers: Arc<RwLock<LruCache<String, TimeframeAnalyzer>>>,
+        timeframe_analyzers: Arc<RwLock<LruCache<String, TimeframeAnalyzer>>>,
         ml_trainer: Arc<RwLock<MLTrainer>>,
         price_cache: Arc<RwLock<PriceCache>>,
         _sentiment_tracker: Arc<RwLock<SentimentAnalyzer>>,
@@ -1332,6 +1350,8 @@ impl TokenSniper {
         // Volume Analysis
         info!("📊 Analyzing volume profile...");
         let volume_profile = VolumeAnalyzer::analyze_volume_profile(
+            pool.volume_1h,
+            pool.volume_6h,
             pool.volume_24h,
             pool.liquidity_sol,
         );
@@ -1354,13 +1374,33 @@ impl TokenSniper {
 
         info!("  ✓ Volume analysis passed");
 
+        let current_price = match price_feed
+            .get_token_price_jupiter(&jupiter, &pool.token_address)
+            .await
+        {
+            Ok(price) if price > 0.0 => price,
+            Ok(_) => 0.0,
+            Err(_) => 0.0,
+        };
+
         // Regime Classification
         info!("🎯 Classifying trading regime...");
-        let regime_classification = RegimeClassifier::classify(
-            &pool,
-            &volume_profile,
-            None
-        );
+        let regime_classification = {
+            let mut analyzers = timeframe_analyzers.write().await;
+            if !analyzers.contains(&pool.token_address) {
+                analyzers.put(pool.token_address.clone(), TimeframeAnalyzer::new());
+            }
+            let analyzer = analyzers.get_mut(&pool.token_address).unwrap();
+            if current_price > 0.0 {
+                let volume_point = if pool.volume_1h > 0.0 {
+                    pool.volume_1h / 60.0
+                } else {
+                    pool.volume_24h / 1440.0
+                };
+                analyzer.add_price(chrono::Utc::now().timestamp_millis(), current_price, volume_point);
+            }
+            RegimeClassifier::classify(&pool, &volume_profile, Some(analyzer))
+        };
 
         let playbook = regime_classification.playbook;
 

@@ -43,6 +43,8 @@ struct Liquidity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Volume {
+    h1: Option<f64>,
+    h6: Option<f64>,
     h24: Option<f64>,
 }
 
@@ -300,6 +302,8 @@ impl PriceFeed {
                             .as_ref()
                             .and_then(|p| p.parse().ok())
                             .unwrap_or(0.0),
+                        volume_1h: pair.volume.as_ref().and_then(|v| v.h1).unwrap_or(0.0),
+                        volume_6h: pair.volume.as_ref().and_then(|v| v.h6).unwrap_or(0.0),
                         volume_24h: pair.volume.as_ref().and_then(|v| v.h24).unwrap_or(0.0),
                         price_change_24h: pair
                             .price_change
@@ -380,6 +384,8 @@ impl PriceFeed {
                         .as_ref()
                         .and_then(|p| p.parse().ok())
                         .unwrap_or(0.0),
+                    volume_1h: pair.volume.as_ref().and_then(|v| v.h1).unwrap_or(0.0),
+                    volume_6h: pair.volume.as_ref().and_then(|v| v.h6).unwrap_or(0.0),
                     volume_24h: pair.volume.as_ref().and_then(|v| v.h24).unwrap_or(0.0),
                     price_change_24h: pair
                         .price_change
@@ -487,6 +493,8 @@ impl PriceFeed {
                         liquidity_usd: 0.0, // Not easily calculable without pool parsing
                         liquidity_sol: account_info.lamports as f64 / 1_000_000_000.0,
                         price_usd,
+                        volume_1h: 0.0,
+                        volume_6h: 0.0,
                         volume_24h: 0.0,
                         price_change_24h: 0.0,
                         created_at: Some(chrono::Utc::now().timestamp_millis()),

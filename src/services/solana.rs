@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use solana_client::nonblocking::rpc_client::RpcClient as AsyncRpcClient;
+use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
+use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     program_pack::Pack,
@@ -78,7 +80,6 @@ impl SolanaConnection {
     }
 
     pub async fn get_token_balance_raw(&self, token_mint: &Pubkey) -> Result<(u64, u8)> {
-        use solana_client::rpc_filter::{Memcmp, RpcFilterType};
         use spl_token::state::Account;
 
         // ✅ FIX #2: Correct offsets for token account filters
@@ -122,6 +123,65 @@ impl SolanaConnection {
         let mint = spl_token::state::Mint::unpack(&mint_account.data)?;
 
         Ok((token_account.amount, mint.decimals))
+    }
+
+    /// Get holder count and top holder percentage for a token mint.
+    pub async fn get_token_holder_stats(&self, token_mint: &Pubkey) -> Result<(usize, f64)> {
+        use spl_token::state::Account as TokenAccount;
+
+        let config = RpcProgramAccountsConfig {
+            filters: Some(vec![
+                RpcFilterType::DataSize(165),
+                RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                    0,
+                    token_mint.to_bytes().to_vec(),
+                )),
+            ]),
+            account_config: RpcAccountInfoConfig {
+                encoding: None,
+                commitment: Some(CommitmentConfig::confirmed()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let accounts = self
+            .client
+            .get_program_accounts_with_config(&spl_token::id(), config)
+            .await
+            .context("Failed to fetch token accounts")?;
+
+        let holder_count = accounts
+            .iter()
+            .filter_map(|(_, account)| TokenAccount::unpack(&account.data).ok())
+            .filter(|account| account.amount > 0)
+            .count();
+
+        let supply = self
+            .client
+            .get_token_supply(token_mint)
+            .await
+            .context("Failed to fetch token supply")?;
+        let supply_amount = supply.amount.parse::<u64>().unwrap_or(0);
+
+        let largest_accounts = self
+            .client
+            .get_token_largest_accounts(token_mint)
+            .await
+            .context("Failed to fetch largest accounts")?;
+        let top_amount = largest_accounts
+            .value
+            .first()
+            .and_then(|account| account.amount.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        let top_holder_percent = if supply_amount > 0 {
+            (top_amount as f64 / supply_amount as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok((holder_count, top_holder_percent))
     }
 
     pub async fn check_health(&self) -> Result<HealthCheck> {

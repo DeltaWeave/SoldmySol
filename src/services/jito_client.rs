@@ -5,11 +5,13 @@ use anyhow::{anyhow, Result};
 use solana_sdk::{
     instruction::Instruction,
     pubkey::Pubkey,
-    signature::{Keypair, Signature},
-    transaction::{Transaction, VersionedTransaction},
+    transaction::VersionedTransaction,
 };
 use std::sync::Arc;
 use tracing::{error, info, warn};
+use reqwest::Client;
+use serde_json::json;
+use base64::Engine;
 
 /// Jito Bundle Client for MEV-protected transactions
 pub struct JitoClient {
@@ -18,6 +20,7 @@ pub struct JitoClient {
     tip_account: Pubkey,
     min_tip_lamports: u64,
     max_tip_lamports: u64,
+    http: Client,
 }
 
 #[derive(Debug, Clone)]
@@ -82,12 +85,17 @@ impl JitoClient {
         info!("   Tip Account: {}", tip_account);
         info!("   Tip Range: {} - {} lamports", min_tip_lamports, max_tip_lamports);
 
+        let http = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+
         Ok(Self {
             enabled,
             block_engine_url,
             tip_account,
             min_tip_lamports,
             max_tip_lamports,
+            http,
         })
     }
 
@@ -108,8 +116,6 @@ impl JitoClient {
         info!("   Transactions: {}", transactions.len());
         info!("   Tip: {} lamports ({:.8} SOL)", tip, tip as f64 / 1e9);
 
-        // In production, this would use the actual Jito searcher client
-        // For now, we'll create a placeholder implementation
         self.send_bundle_internal(transactions, tip, config).await
     }
 
@@ -155,48 +161,78 @@ impl JitoClient {
         transactions: &[VersionedTransaction],
         tip: u64,
     ) -> Result<BundleResult> {
-        // This is a placeholder implementation
-        // In production, use the Jito searcher client:
-        //
-        // let client = SearcherClient::new(&self.block_engine_url).await?;
-        // let bundle = client.send_bundle(transactions, tip).await?;
-        //
-        // For now, we simulate the behavior:
-
         info!("📡 Connecting to Jito block engine: {}", self.block_engine_url);
 
-        // Simulate network call
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Extract signatures
-        let signatures: Vec<String> = transactions
+        let encoded_transactions: Vec<String> = transactions
             .iter()
             .map(|tx| {
-                // In real implementation, get actual signature
-                bs58::encode(&[0u8; 64]).into_string()
+                let serialized = bincode::serialize(tx)
+                    .map_err(|e| anyhow!("Failed to serialize transaction: {}", e))?;
+                Ok(base64::engine::general_purpose::STANDARD.encode(serialized))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
-        // Simulate bundle acceptance (90% success rate for demo)
-        let success = rand::random::<f64>() > 0.1;
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendBundle",
+            "params": [{
+                "transactions": encoded_transactions,
+                "tip": tip
+            }]
+        });
 
-        if success {
-            Ok(BundleResult {
-                success: true,
-                bundle_id: Some(format!("bundle_{}", chrono::Utc::now().timestamp())),
-                signatures,
-                tip_paid: tip,
-                error: None,
-            })
-        } else {
-            Ok(BundleResult {
+        let response = self
+            .http
+            .post(&self.block_engine_url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Jito request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "Jito block engine error: HTTP {}",
+                response.status()
+            ));
+        }
+
+        let response_json: serde_json::Value = response.json().await?;
+        if let Some(error) = response_json.get("error") {
+            return Ok(BundleResult {
                 success: false,
                 bundle_id: None,
                 signatures: vec![],
                 tip_paid: 0,
-                error: Some("Bundle simulation failed".to_string()),
-            })
+                error: Some(error.to_string()),
+            });
         }
+
+        let result = response_json.get("result").cloned().unwrap_or_default();
+        let bundle_id = result
+            .get("bundleId")
+            .or_else(|| result.get("bundle_id"))
+            .and_then(|value| value.as_str())
+            .map(|s| s.to_string());
+
+        let signatures = result
+            .get("signatures")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Ok(BundleResult {
+            success: true,
+            bundle_id,
+            signatures,
+            tip_paid: tip,
+            error: None,
+        })
     }
 
     /// Create tip instruction for bundle

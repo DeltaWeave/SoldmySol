@@ -72,6 +72,8 @@ pub struct TokenPool {
     pub liquidity_usd: f64,
     pub liquidity_sol: f64,
     pub price_usd: f64,
+    pub volume_1h: f64,
+    pub volume_6h: f64,
     pub volume_24h: f64,
     pub price_change_24h: f64,
     pub created_at: Option<i64>,
