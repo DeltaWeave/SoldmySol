@@ -10,6 +10,7 @@ pub mod regime_classifier;
 pub mod momentum_trader;
 pub mod hybrid_strategy;
 pub mod pumpfun_token_sniper;
+pub mod route_validation;
 pub mod token_creation_monitor;
 
 pub use token_sniper::TokenSniper;

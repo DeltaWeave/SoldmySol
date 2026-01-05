@@ -15,6 +15,8 @@ use tracing::{debug, info, warn, error};
 
 use crate::config::Config;
 use crate::services::{Database, JupiterService, PriceFeed, SolanaConnection};
+use crate::services::jupiter::SOL_MINT;
+use crate::strategies::route_validation::validate_entry_exit_routes;
 use crate::strategies::{PatternDetector, Pattern, TradeRecommendation, PricePoint};
 
 /// Token candidate for momentum trading
@@ -291,28 +293,31 @@ impl MomentumTrader {
 
     /// Verify that Jupiter can route this token
     async fn verify_jupiter_route(&self, candidate: &MomentumCandidate) -> Result<bool> {
-        let sol_mint = "So11111111111111111111111111111111111111112";
         let amount_lamports = (self.config.sniper.snipe_amount_sol * 1e9) as u64;
 
-        // Try to get quote for entry (SOL -> Token)
-        let entry_quote = self.jupiter
-            .get_quote(sol_mint, &candidate.token_mint, amount_lamports, 50) // 0.5% slippage
-            .await;
-
-        if entry_quote.is_err() {
-            return Ok(false);
+        match validate_entry_exit_routes(
+            &self.jupiter,
+            &self.config,
+            SOL_MINT,
+            &candidate.token_mint,
+            amount_lamports,
+            self.config.risk.slippage_bps,
+        )
+        .await
+        {
+            Ok(validation) => {
+                info!(
+                    "✅ Route validated for {} (impact {}bps)",
+                    candidate.symbol,
+                    validation.impact_bps
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("Route validation failed for {}: {}", candidate.symbol, e);
+                Ok(false)
+            }
         }
-
-        // Try to get quote for exit (Token -> SOL)
-        // Estimate token amount based on price
-        let estimated_tokens = self.config.sniper.snipe_amount_sol / candidate.price_usd;
-        let token_amount = (estimated_tokens * 1e9) as u64; // Assuming 9 decimals
-
-        let exit_quote = self.jupiter
-            .get_quote(&candidate.token_mint, sol_mint, token_amount / 2, 50) // Test with half
-            .await;
-
-        Ok(exit_quote.is_ok())
     }
 
     /// Execute entry trade

@@ -24,6 +24,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::services::{Database, JupiterService, SolanaConnection};
+use crate::services::jupiter::SOL_MINT;
+use crate::strategies::route_validation::validate_entry_exit_routes;
 use solana_sdk::pubkey::Pubkey;
 
 /// SPL Token Program
@@ -486,6 +488,34 @@ impl TokenCreationMonitor {
 
                             // Execute snipe
                             info!("🚀 Attempting to snipe...");
+
+                            let amount_lamports = (position_size * 1e9) as u64;
+                            match validate_entry_exit_routes(
+                                &jupiter,
+                                &config,
+                                SOL_MINT,
+                                &token_mint,
+                                amount_lamports,
+                                config.risk.slippage_bps,
+                            )
+                            .await
+                            {
+                                Ok(validation) => {
+                                    info!(
+                                        "✅ Route validated for {} (impact {}bps)",
+                                        &token_mint[..8],
+                                        validation.impact_bps
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "⛔ Entry blocked for {}: {}",
+                                        &token_mint[..8],
+                                        e
+                                    );
+                                    return;
+                                }
+                            }
 
                             // Execute actual buy via Jupiter
                             match jupiter.buy_with_sol(
