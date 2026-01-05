@@ -278,6 +278,7 @@ impl TokenSniper {
         let daily_pnl = self.daily_pnl.clone();
         let pattern_detectors = self.pattern_detectors.clone();
         let timeframe_analyzers = self.timeframe_analyzers.clone();
+        let price_trackers = self.price_trackers.clone();
         let ml_trainer = self.ml_trainer.clone();
         let price_cache = self.price_cache.clone();
         let sentiment_analyzer = self.sentiment_analyzer.clone();
