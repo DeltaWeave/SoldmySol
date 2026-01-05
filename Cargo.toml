@@ -85,6 +85,7 @@ teloxide = { version = "0.12", features = ["macros"] }
 
 # Random number generation
 rand = "0.8"
+bytemuck = { version = "1.15", features = ["derive"] }
 
 # Cryptography (exact versions required by Solana 1.17)
 ed25519-dalek = "=1.0.1"

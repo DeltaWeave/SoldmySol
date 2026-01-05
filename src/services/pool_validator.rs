@@ -12,6 +12,7 @@ use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use tracing::{debug, info, warn};
+use bytemuck::{Pod, Zeroable};
 
 /// Minimum liquidity thresholds (in lamports)
 const MIN_SOL_LIQUIDITY_LAMPORTS: u64 = 1_000_000_000; // 1 SOL
@@ -50,6 +51,75 @@ pub enum DexType {
     OrcaWhirlpool,
     Meteora,
     Unknown,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Zeroable, Pod)]
+struct RaydiumFees {
+    min_separate_numerator: u64,
+    min_separate_denominator: u64,
+    trade_fee_numerator: u64,
+    trade_fee_denominator: u64,
+    pnl_numerator: u64,
+    pnl_denominator: u64,
+    swap_fee_numerator: u64,
+    swap_fee_denominator: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Zeroable, Pod)]
+struct RaydiumStateData {
+    need_take_pnl_coin: u64,
+    need_take_pnl_pc: u64,
+    total_pnl_pc: u64,
+    total_pnl_coin: u64,
+    pool_open_time: u64,
+    padding: [u64; 2],
+    orderbook_to_init_time: u64,
+    swap_coin_in_amount: u128,
+    swap_pc_out_amount: u128,
+    swap_acc_pc_fee: u64,
+    swap_pc_in_amount: u128,
+    swap_coin_out_amount: u128,
+    swap_acc_coin_fee: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Zeroable, Pod)]
+struct RaydiumAmmInfo {
+    status: u64,
+    nonce: u64,
+    order_num: u64,
+    depth: u64,
+    coin_decimals: u64,
+    pc_decimals: u64,
+    state: u64,
+    reset_flag: u64,
+    min_size: u64,
+    vol_max_cut_ratio: u64,
+    amount_wave: u64,
+    coin_lot_size: u64,
+    pc_lot_size: u64,
+    min_price_multiplier: u64,
+    max_price_multiplier: u64,
+    sys_decimal_value: u64,
+    fees: RaydiumFees,
+    state_data: RaydiumStateData,
+    coin_vault: Pubkey,
+    pc_vault: Pubkey,
+    coin_vault_mint: Pubkey,
+    pc_vault_mint: Pubkey,
+    lp_mint: Pubkey,
+    open_orders: Pubkey,
+    market: Pubkey,
+    market_program: Pubkey,
+    target_orders: Pubkey,
+    padding1: [u64; 8],
+    amm_owner: Pubkey,
+    lp_amount: u64,
+    client_order_id: u64,
+    recent_epoch: u64,
+    padding2: u64,
 }
 
 pub struct PoolValidator {
