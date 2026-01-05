@@ -23,6 +23,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::services::{Database, JupiterService, PumpFunSwap, SolanaConnection};
+use crate::services::jupiter::SOL_MINT;
+use crate::strategies::route_validation::validate_entry_exit_routes;
 use solana_sdk::pubkey::Pubkey;
 
 /// Pump.fun program ID
@@ -397,6 +399,34 @@ impl PumpfunTokenSniper {
         candidate: &TokenLaunchCandidate,
     ) -> Result<BondingCurvePosition> {
         info!("💰 Buying {} SOL on bonding curve...", self.position_size_sol);
+
+        let amount_lamports = (self.position_size_sol * 1e9) as u64;
+        match validate_entry_exit_routes(
+            &self.jupiter,
+            &self.config,
+            SOL_MINT,
+            &candidate.token_mint,
+            amount_lamports,
+            self.config.risk.slippage_bps,
+        )
+        .await
+        {
+            Ok(validation) => {
+                info!(
+                    "✅ Route validated for {} (impact {}bps)",
+                    &candidate.token_mint[..8],
+                    validation.impact_bps
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "⛔ Entry blocked for {}: {}",
+                    &candidate.token_mint[..8],
+                    e
+                );
+                return Err(e);
+            }
+        }
 
         // Get keypair from SolanaConnection for real execution
         let keypair = self.solana.get_wallet();
