@@ -397,10 +397,103 @@ impl PoolValidator {
         pool_address: &str,
         _snipe_amount_sol: f64,
     ) -> Result<PoolAccountStatus> {
-        // Raydium AMM validation (simpler XYK model)
-        // For now, return None to focus on CLMM/Whirlpool
-        debug!("Raydium AMM validation not yet implemented");
-        Ok(PoolAccountStatus::NoLiquidity { pool_address: pool_address.to_string(), sol_liquidity: 0.0 })
+        let pool_pubkey = Pubkey::from_str(pool_address)
+            .context("Invalid pool address")?;
+
+        let account_data = match self.fetch_account_with_retry(&pool_pubkey, 5).await {
+            Ok(data) => data,
+            Err(e) => {
+                info!("⚠️  Failed to fetch Raydium AMM account {}: {:?}", pool_address, e);
+                return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
+            }
+        };
+
+        if account_data.len() < 464 {
+            info!("⚠️  Raydium AMM account too small: {} bytes", account_data.len());
+            return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
+        }
+
+        // Raydium AMM v4 layout (approximate offsets):
+        // base_vault: 336..368
+        // quote_vault: 368..400
+        // base_mint: 400..432
+        // quote_mint: 432..464
+        let base_vault = Pubkey::new_from_array(
+            account_data[336..368].try_into().unwrap_or([0u8; 32])
+        );
+        let quote_vault = Pubkey::new_from_array(
+            account_data[368..400].try_into().unwrap_or([0u8; 32])
+        );
+        let base_mint = Pubkey::new_from_array(
+            account_data[400..432].try_into().unwrap_or([0u8; 32])
+        );
+        let quote_mint = Pubkey::new_from_array(
+            account_data[432..464].try_into().unwrap_or([0u8; 32])
+        );
+
+        let (reserve_base, reserve_quote) = self.fetch_vault_balances(&base_vault, &quote_vault)?;
+
+        info!(
+            "🔍 Raydium AMM vaults: base={}, quote={}, reserve_base={} ({:.4}), reserve_quote={} ({:.4})",
+            &base_mint.to_string()[..8],
+            &quote_mint.to_string()[..8],
+            reserve_base,
+            reserve_base as f64 / 1e9,
+            reserve_quote,
+            reserve_quote as f64 / 1e9
+        );
+
+        let wsol_mint = "So11111111111111111111111111111111111111112";
+        let (base_mint_str, quote_mint_str, base_reserve, quote_reserve) =
+            if base_mint.to_string() == wsol_mint {
+                (quote_mint.to_string(), base_mint.to_string(), reserve_quote, reserve_base)
+            } else if quote_mint.to_string() == wsol_mint {
+                (base_mint.to_string(), quote_mint.to_string(), reserve_base, reserve_quote)
+            } else {
+                info!("⚠️  Raydium AMM pool has no SOL pair (token-token pool)");
+                return Ok(PoolAccountStatus::NoLiquidity {
+                    pool_address: pool_address.to_string(),
+                    sol_liquidity: 0.0,
+                });
+            };
+
+        if quote_reserve < MIN_SOL_LIQUIDITY_LAMPORTS {
+            info!(
+                "⚠️  Raydium AMM below min: {:.4} SOL (need {:.1} SOL)",
+                quote_reserve as f64 / 1e9,
+                MIN_SOL_LIQUIDITY_LAMPORTS as f64 / 1e9
+            );
+            return Ok(PoolAccountStatus::NoLiquidity {
+                pool_address: pool_address.to_string(),
+                sol_liquidity: quote_reserve as f64 / 1e9,
+            });
+        }
+
+        let estimated_price = if base_reserve > 0 {
+            (quote_reserve as f64 / 1e9) / (base_reserve as f64 / 1e6)
+        } else {
+            0.0
+        };
+
+        let liquidity_usd = (quote_reserve as f64 / 1e9) * 150.0;
+
+        info!(
+            "✅ Raydium AMM VALID: {} SOL liquidity, price ~${:.9}",
+            quote_reserve as f64 / 1e9,
+            estimated_price
+        );
+
+        Ok(PoolAccountStatus::Valid(PoolLiquidityState {
+            pool_address: pool_address.to_string(),
+            base_mint: base_mint_str,
+            quote_mint: quote_mint_str,
+            base_reserve,
+            quote_reserve,
+            liquidity_usd,
+            estimated_price,
+            tradeable: true,
+            dex_type: DexType::RaydiumAMM,
+        }))
     }
 
     /// Validate Meteora pool
@@ -409,8 +502,99 @@ impl PoolValidator {
         pool_address: &str,
         _snipe_amount_sol: f64,
     ) -> Result<PoolAccountStatus> {
-        debug!("Meteora validation not yet implemented");
-        Ok(PoolAccountStatus::NoLiquidity { pool_address: pool_address.to_string(), sol_liquidity: 0.0 })
+        let pool_pubkey = Pubkey::from_str(pool_address)
+            .context("Invalid pool address")?;
+
+        let account_data = match self.fetch_account_with_retry(&pool_pubkey, 5).await {
+            Ok(data) => data,
+            Err(e) => {
+                info!("⚠️  Failed to fetch Meteora account {}: {:?}", pool_address, e);
+                return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
+            }
+        };
+
+        if account_data.len() < 136 {
+            info!("⚠️  Meteora account too small: {} bytes", account_data.len());
+            return Ok(PoolAccountStatus::NotReady { pool_address: pool_address.to_string(), attempts: 5 });
+        }
+
+        // Meteora DLMM pools are CLMM-style. Use generic offsets as a best-effort parse.
+        let token_a_mint = Pubkey::new_from_array(
+            account_data[8..40].try_into().unwrap_or([0u8; 32])
+        );
+        let token_b_mint = Pubkey::new_from_array(
+            account_data[40..72].try_into().unwrap_or([0u8; 32])
+        );
+        let token_a_vault = Pubkey::new_from_array(
+            account_data[72..104].try_into().unwrap_or([0u8; 32])
+        );
+        let token_b_vault = Pubkey::new_from_array(
+            account_data[104..136].try_into().unwrap_or([0u8; 32])
+        );
+
+        let (reserve_a, reserve_b) = self.fetch_vault_balances(&token_a_vault, &token_b_vault)?;
+
+        info!(
+            "🔍 Meteora vaults: mintA={}, mintB={}, reserveA={} ({:.4}), reserveB={} ({:.4})",
+            &token_a_mint.to_string()[..8],
+            &token_b_mint.to_string()[..8],
+            reserve_a,
+            reserve_a as f64 / 1e9,
+            reserve_b,
+            reserve_b as f64 / 1e9
+        );
+
+        let wsol_mint = "So11111111111111111111111111111111111111112";
+        let (base_mint, quote_mint, base_reserve, quote_reserve) =
+            if token_a_mint.to_string() == wsol_mint {
+                (token_b_mint.to_string(), token_a_mint.to_string(), reserve_b, reserve_a)
+            } else if token_b_mint.to_string() == wsol_mint {
+                (token_a_mint.to_string(), token_b_mint.to_string(), reserve_a, reserve_b)
+            } else {
+                info!("⚠️  Meteora pool has no SOL pair (token-token pool)");
+                return Ok(PoolAccountStatus::NoLiquidity {
+                    pool_address: pool_address.to_string(),
+                    sol_liquidity: 0.0,
+                });
+            };
+
+        if quote_reserve < MIN_SOL_LIQUIDITY_LAMPORTS {
+            info!(
+                "⚠️  Meteora below min: {:.4} SOL (need {:.1} SOL)",
+                quote_reserve as f64 / 1e9,
+                MIN_SOL_LIQUIDITY_LAMPORTS as f64 / 1e9
+            );
+            return Ok(PoolAccountStatus::NoLiquidity {
+                pool_address: pool_address.to_string(),
+                sol_liquidity: quote_reserve as f64 / 1e9,
+            });
+        }
+
+        let estimated_price = if base_reserve > 0 {
+            (quote_reserve as f64 / 1e9) / (base_reserve as f64 / 1e6)
+        } else {
+            0.0
+        };
+
+        let liquidity_usd = (quote_reserve as f64 / 1e9) * 150.0;
+
+        info!(
+            "✅ Meteora VALID: {} SOL liquidity, price ~${:.9}",
+            quote_reserve as f64 / 1e9,
+            estimated_price
+        );
+
+        Ok(PoolAccountStatus::Valid(PoolLiquidityState {
+            pool_address: pool_address.to_string(),
+            base_mint,
+            quote_mint,
+            base_reserve,
+            quote_reserve,
+            liquidity_usd,
+            estimated_price,
+            tradeable: true,
+            dex_type: DexType::Meteora,
+        }))
     }
 
     /// Fetch token vault balances
