@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::services::{Database, JupiterService, SolanaConnection};
+use solana_sdk::pubkey::Pubkey;
 
 /// SPL Token Program
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -575,6 +576,8 @@ impl TokenCreationMonitor {
     fn spawn_position_monitor(&self) -> tokio::task::JoinHandle<()> {
         let positions = self.active_positions.clone();
         let jupiter = self.jupiter.clone();
+        let solana = self.solana.clone();
+        let config = self.config.clone();
 
         tokio::spawn(async move {
             loop {
@@ -591,13 +594,38 @@ impl TokenCreationMonitor {
 
                 debug!("📊 Monitoring {} sniped positions", positions_snapshot.len());
 
+                let mut positions_to_remove = Vec::new();
+
                 for position in positions_snapshot {
                     let age_secs = position.entry_time.elapsed().as_secs();
 
                     // Check current price via Jupiter
                     match jupiter.get_token_price(&position.token_mint).await {
                         Ok(current_price) => {
-                            let value_now = current_price * position.amount_sol;
+                            let token_pubkey = match Pubkey::from_str(&position.token_mint) {
+                                Ok(pubkey) => pubkey,
+                                Err(e) => {
+                                    warn!("Invalid token mint {}: {}", position.token_mint, e);
+                                    continue;
+                                }
+                            };
+
+                            let (token_amount_raw, decimals) = match solana.get_token_balance_raw(&token_pubkey).await {
+                                Ok(balance) => balance,
+                                Err(e) => {
+                                    warn!("Failed to fetch token balance for {}: {}", position.token_mint, e);
+                                    continue;
+                                }
+                            };
+
+                            if token_amount_raw == 0 {
+                                warn!("Position {} has zero token balance; removing from monitor", &position.token_mint[..8]);
+                                positions_to_remove.push(position.token_mint.clone());
+                                continue;
+                            }
+
+                            let token_amount_ui = token_amount_raw as f64 / 10_f64.powi(decimals as i32);
+                            let value_now = current_price * token_amount_ui;
                             let multiplier = value_now / position.entry_price_sol;
 
                             debug!("   {} | Age: {}s | Current: {:.2}x",
@@ -609,18 +637,43 @@ impl TokenCreationMonitor {
                             // Exit if target hit
                             if multiplier >= position.target_multiplier {
                                 info!("🎯 TARGET HIT: {} at {:.2}x", &position.token_mint[..8], multiplier);
-                                // TODO: Execute sell
+                                if let Err(e) = execute_exit(
+                                    &jupiter,
+                                    &solana,
+                                    &config,
+                                    &position.token_mint,
+                                ).await {
+                                    warn!("Failed to exit position {}: {}", &position.token_mint[..8], e);
+                                } else {
+                                    positions_to_remove.push(position.token_mint.clone());
+                                }
                             }
 
                             // Emergency exit if held too long (2 hours)
                             if age_secs > 7200 {
                                 warn!("⏰ Position {} held too long, should exit", &position.token_mint[..8]);
-                                // TODO: Execute sell
+                                if let Err(e) = execute_exit(
+                                    &jupiter,
+                                    &solana,
+                                    &config,
+                                    &position.token_mint,
+                                ).await {
+                                    warn!("Failed to exit position {}: {}", &position.token_mint[..8], e);
+                                } else {
+                                    positions_to_remove.push(position.token_mint.clone());
+                                }
                             }
                         }
                         Err(e) => {
                             debug!("Failed to get price for {}: {}", &position.token_mint[..8], e);
                         }
+                    }
+                }
+
+                if !positions_to_remove.is_empty() {
+                    let mut pos_guard = positions.write().await;
+                    for token_mint in positions_to_remove {
+                        pos_guard.remove(&token_mint);
                     }
                 }
             }
@@ -633,4 +686,40 @@ impl TokenCreationMonitor {
         info!("✅ Token Creation Monitor stopped");
         Ok(())
     }
+}
+
+async fn execute_exit(
+    jupiter: &Arc<JupiterService>,
+    solana: &Arc<SolanaConnection>,
+    config: &Config,
+    token_mint: &str,
+) -> Result<()> {
+    let token_pubkey = Pubkey::from_str(token_mint)?;
+    let (token_amount_raw, _decimals) = solana.get_token_balance_raw(&token_pubkey).await?;
+
+    if token_amount_raw == 0 {
+        return Err(anyhow::anyhow!("No token balance available for exit"));
+    }
+
+    let result = jupiter.sell_for_sol(solana, config, token_mint, token_amount_raw).await?;
+
+    let signature = result.signature.unwrap_or_default();
+    let log_msg = format!(
+        "[{}] TOKEN CREATION SELL | Token: {} | Amount: {} | Sig: {}\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        token_mint,
+        token_amount_raw,
+        signature
+    );
+
+    if let Err(e) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("bot.log")
+        .and_then(|mut f| std::io::Write::write_all(&mut f, log_msg.as_bytes()))
+    {
+        warn!("Failed to write to dashboard log: {}", e);
+    }
+
+    Ok(())
 }

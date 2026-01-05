@@ -72,6 +72,12 @@ impl SolanaConnection {
     }
 
     pub async fn get_token_balance(&self, token_mint: &Pubkey) -> Result<f64> {
+        let (amount, decimals) = self.get_token_balance_raw(token_mint).await?;
+
+        Ok(amount as f64 / 10_f64.powi(decimals as i32))
+    }
+
+    pub async fn get_token_balance_raw(&self, token_mint: &Pubkey) -> Result<(u64, u8)> {
         use solana_client::rpc_filter::{Memcmp, RpcFilterType};
         use spl_token::state::Account;
 
@@ -101,7 +107,9 @@ impl SolanaConnection {
             .context("Failed to get token accounts")?;
 
         if accounts.is_empty() {
-            return Ok(0.0);
+            let mint_account = self.client.get_account(token_mint).await?;
+            let mint = spl_token::state::Mint::unpack(&mint_account.data)?;
+            return Ok((0, mint.decimals));
         }
 
         // Parse first account
@@ -113,8 +121,7 @@ impl SolanaConnection {
         let mint_account = self.client.get_account(token_mint).await?;
         let mint = spl_token::state::Mint::unpack(&mint_account.data)?;
 
-        // ✅ FIX #2: Adjust for decimals
-        Ok(token_account.amount as f64 / 10_f64.powi(mint.decimals as i32))
+        Ok((token_account.amount, mint.decimals))
     }
 
     pub async fn check_health(&self) -> Result<HealthCheck> {
