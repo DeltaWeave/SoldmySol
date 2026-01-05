@@ -67,7 +67,7 @@ impl VolumeAnalyzer {
             VolumeTrend::Steady
         };
 
-        // Derive buy/sell ratio from liquidity-adjusted volume and acceleration
+        // Estimate buy/sell ratio (simplified)
         let buy_sell_ratio = Self::estimate_buy_sell_ratio(volume_liquidity_ratio, volume_accel);
 
         // Penalize extreme buy/sell imbalances

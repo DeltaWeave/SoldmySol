@@ -342,6 +342,7 @@ impl DataCollector {
         let mut name = "UNKNOWN".to_string();
         let mut pair_address = "UNKNOWN".to_string();
         let mut liquidity_sol = 0.0;
+        let mut market_cap = 0.0;
         let mut volume_24h = 0.0;
         let mut volume_1h = 0.0;
         let mut volume_5m = 0.0;
@@ -371,7 +372,7 @@ impl DataCollector {
         };
 
         let (holders, top_holder_percent) = holders_data.unwrap_or((0, 0.0));
-        let market_cap = if price_usd > 0.0 {
+        market_cap = if price_usd > 0.0 {
             let supply = if let Ok(mint) = solana_sdk::pubkey::Pubkey::from_str(token_address) {
                 self.solana
                     .get_client()

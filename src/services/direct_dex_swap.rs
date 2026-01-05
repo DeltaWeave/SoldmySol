@@ -280,7 +280,7 @@ impl DirectDexSwap {
         }
 
         // Uniswap v3-style concentrated liquidity math (single tick approximation)
-        let (_new_sqrt, output_amount) = if a_to_b {
+        let (new_sqrt, output_amount) = if a_to_b {
             // Token A in (token0), Token B out (token1)
             let new_sqrt = (liquidity_f64 * sqrt_price)
                 / (liquidity_f64 + amount_in_f64 * sqrt_price);

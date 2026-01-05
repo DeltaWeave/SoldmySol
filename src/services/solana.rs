@@ -79,6 +79,8 @@ impl SolanaConnection {
     }
 
     pub async fn get_token_balance_raw(&self, token_mint: &Pubkey) -> Result<(u64, u8)> {
+        use spl_token::state::Account;
+
         // ✅ FIX #2: Correct offsets for token account filters
         let filters = vec![
             RpcFilterType::DataSize(165),
@@ -167,8 +169,9 @@ impl SolanaConnection {
             .await
             .context("Failed to fetch largest accounts")?;
         let top_amount = largest_accounts
+            .value
             .first()
-            .and_then(|account| account.amount.amount.parse::<u64>().ok())
+            .and_then(|account| account.amount.parse::<u64>().ok())
             .unwrap_or(0);
 
         let top_holder_percent = if supply_amount > 0 {
