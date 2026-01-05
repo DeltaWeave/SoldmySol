@@ -38,6 +38,16 @@ struct BondingCurveState {
     is_mayhem_mode: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct BondingCurveSnapshot {
+    pub real_sol_reserves: f64,
+    pub virtual_sol_reserves: f64,
+    pub real_token_reserves: u64,
+    pub virtual_token_reserves: u64,
+    pub is_complete: bool,
+    pub creator: Pubkey,
+}
+
 pub struct PumpFunSwap {
     rpc_client: RpcClient,
 }
@@ -47,6 +57,22 @@ impl PumpFunSwap {
         Self {
             rpc_client: RpcClient::new(rpc_url.to_string()),
         }
+    }
+
+    /// Fetch bonding curve snapshot for validation and risk checks.
+    pub fn get_curve_snapshot(&self, token_mint: &str) -> Result<BondingCurveSnapshot> {
+        let token_mint_pubkey = Pubkey::from_str(token_mint)?;
+        let bonding_curve = self.derive_bonding_curve(&token_mint_pubkey)?;
+        let state = self.fetch_bonding_curve_state(&bonding_curve)?;
+
+        Ok(BondingCurveSnapshot {
+            real_sol_reserves: state.real_sol_reserves as f64 / 1_000_000_000.0,
+            virtual_sol_reserves: state.virtual_sol_reserves as f64 / 1_000_000_000.0,
+            real_token_reserves: state.real_token_reserves,
+            virtual_token_reserves: state.virtual_token_reserves,
+            is_complete: state.complete,
+            creator: state.creator,
+        })
     }
 
     /// Execute a buy on Pump.fun bonding curve
