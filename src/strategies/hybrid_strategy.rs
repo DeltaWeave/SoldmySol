@@ -106,6 +106,7 @@ impl HybridStrategy {
         let pumpfun_sniper = Arc::new(PumpfunTokenSniper::new(
             pumpfun_config,
             self.solana.clone(),
+            self.jupiter.clone(),
             self.pumpfun.clone(),
             Arc::new(pumpfun_db),
         ));
