@@ -297,6 +297,9 @@ mod tests {
     #[test]
     fn test_feature_extraction() {
         let volume_profile = VolumeProfile {
+            volume_1h: 1500.0,
+            volume_6h: 6000.0,
+            volume_24h: 24000.0,
             volume_trend: VolumeTrend::Accelerating,
             buy_sell_ratio: 1.5,
             quality_score: 80,
@@ -310,9 +313,9 @@ mod tests {
 
         let sentiment = MarketSentiment {
             sol_trend: Trend::Bullish,
-            sol_change_1h: 2.5,
-            sol_change_24h: 5.0,
-            fear_greed_index: 70,
+            sol_price_change_1h: 2.5,
+            sol_price_change_24h: 5.0,
+            market_fear_greed: 70,
             trading_recommended: true,
         };
 

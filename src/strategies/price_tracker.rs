@@ -134,6 +134,7 @@ mod tests {
         tracker.add_price(base_time, 1.0);                          // t=0
         tracker.add_price(base_time + 5 * 60 * 1000, 1.05);        // t=5m, +5%
         tracker.add_price(base_time + 15 * 60 * 1000, 1.10);       // t=15m, +10%
+        tracker.add_price(base_time + 55 * 60 * 1000, 1.15);       // t=55m, +15%
         tracker.add_price(base_time + 60 * 60 * 1000, 1.20);       // t=60m, +20%
 
         let current_price = 1.20;
@@ -142,8 +143,8 @@ mod tests {
         let change_15m = tracker.get_price_change(15, current_price);
         let change_60m = tracker.get_price_change(60, current_price);
 
-        // 5m ago: 1.05 -> 1.20 = +14.29%
-        assert!((change_5m - 14.29).abs() < 0.1);
+        // 5m ago: 1.15 -> 1.20 = +4.35%
+        assert!((change_5m - 4.35).abs() < 0.1);
 
         // 15m ago: 1.10 -> 1.20 = +9.09%
         assert!((change_15m - 9.09).abs() < 0.1);

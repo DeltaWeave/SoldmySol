@@ -231,7 +231,7 @@ impl MLTrainer {
     /// Export model and stats for persistence
     pub fn export(&self) -> String {
         format!(
-            "MODEL:{}|STATS:{}|SAMPLES:{}",
+            "MODEL:{}\nSTATS:{}\nSAMPLES:{}",
             self.model.to_string(),
             self.feature_stats.to_string(),
             self.training_buffer.len()
@@ -240,12 +240,10 @@ impl MLTrainer {
 
     /// Import model and stats from persistence
     pub fn import(&mut self, data: &str) -> Result<()> {
-        let parts: Vec<&str> = data.split('|').collect();
-
-        for part in parts {
-            if let Some(model_data) = part.strip_prefix("MODEL:") {
+        for line in data.lines() {
+            if let Some(model_data) = line.strip_prefix("MODEL:") {
                 self.model = LogisticRegression::from_string(model_data)?;
-            } else if let Some(stats_data) = part.strip_prefix("STATS:") {
+            } else if let Some(stats_data) = line.strip_prefix("STATS:") {
                 self.feature_stats = FeatureStats::from_string(stats_data)
                     .ok_or_else(|| anyhow::anyhow!("Invalid stats format"))?;
             }
@@ -352,7 +350,7 @@ mod tests {
             retrain_interval: 20,
             ..Default::default()
         };
-        let mut trainer = MLTrainer::new(config);
+        let mut trainer = MLTrainer::new(config.clone());
 
         // Add samples
         for i in 0..50 {

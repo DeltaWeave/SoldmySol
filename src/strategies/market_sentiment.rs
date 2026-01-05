@@ -148,11 +148,11 @@ mod tests {
 
     #[test]
     fn test_trend_determination() {
-        assert_eq!(Trend::determine_trend(6.0, 12.0), Trend::StrongBullish);
-        assert_eq!(Trend::determine_trend(3.0, 4.0), Trend::Bullish);
-        assert_eq!(Trend::determine_trend(0.5, 0.5), Trend::Neutral);
-        assert_eq!(Trend::determine_trend(-3.0, -2.0), Trend::Bearish);
-        assert_eq!(Trend::determine_trend(-6.0, -12.0), Trend::StrongBearish);
+        assert_eq!(SentimentAnalyzer::determine_trend(6.0, 12.0), Trend::StrongBullish);
+        assert_eq!(SentimentAnalyzer::determine_trend(3.0, 4.0), Trend::Bullish);
+        assert_eq!(SentimentAnalyzer::determine_trend(0.5, 0.5), Trend::Neutral);
+        assert_eq!(SentimentAnalyzer::determine_trend(-3.0, -2.0), Trend::Bearish);
+        assert_eq!(SentimentAnalyzer::determine_trend(-6.0, -12.0), Trend::StrongBearish);
     }
 
     #[test]

@@ -268,10 +268,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_handling() {
-        let tasks: Vec<_> = vec![
-            move || async move { Ok::<i32, anyhow::Error>(1) },
-            move || async move { Err(anyhow::anyhow!("Test error")) },
-            move || async move { Ok::<i32, anyhow::Error>(3) },
+        fn make_task(
+            result: Result<i32>,
+        ) -> impl FnOnce() -> futures::future::BoxFuture<'static, Result<i32>> {
+            move || Box::pin(async move { result })
+        }
+
+        let tasks = vec![
+            make_task(Ok(1)),
+            make_task(Err(anyhow::anyhow!("Test error"))),
+            make_task(Ok(3)),
         ];
 
         let results = RpcBatcher::batch_execute_all(tasks).await;

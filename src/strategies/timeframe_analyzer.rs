@@ -391,7 +391,7 @@ mod tests {
 
         for i in 0..120 {
             let timestamp = base_time + (i * 60 * 1000); // Every minute
-            let price = 100.0 + (i as f64 * 0.1); // Gradual increase
+            let price = 100.0 + (i as f64 * 2.5); // Strong increase
             analyzer.add_price(timestamp, price, 1000.0);
         }
 
@@ -416,7 +416,7 @@ mod tests {
         // Create downtrend: prices gradually decreasing
         for i in 0..120 {
             let timestamp = base_time + (i * 60 * 1000); // Every minute
-            let price = 100.0 - (i as f64 * 0.1); // Gradual decrease
+            let price = 500.0 - (i as f64 * 2.5); // Strong decrease
             analyzer.add_price(timestamp, price, 1000.0);
         }
 
