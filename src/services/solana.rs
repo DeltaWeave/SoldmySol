@@ -170,8 +170,9 @@ impl SolanaConnection {
             .await
             .context("Failed to fetch largest accounts")?;
         let top_amount = largest_accounts
+            .value
             .first()
-            .and_then(|account| account.amount.amount.parse::<u64>().ok())
+            .and_then(|account| account.amount.parse::<u64>().ok())
             .unwrap_or(0);
 
         let top_holder_percent = if supply_amount > 0 {
